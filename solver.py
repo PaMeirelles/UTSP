@@ -47,12 +47,26 @@ class Instance:
         self.coordinates = np.array(coordinates)
         if solution is not None:
             self.solution = np.array(solution)
+        else:
+            self.solution = None
 
     def get_name(self) -> str:
         return f"{instance_type_to_name(self.instance_type)}_{self.instance_id}"
 
     def get_number_of_nodes(self) -> int:
         return len(self.coordinates)
+
+    def _add_dummies(self, target):
+        missing = target - self.get_number_of_nodes()
+        if missing <= 0:
+            return
+
+        ref_node = self.coordinates[0]
+        dummies = np.tile(ref_node, (missing, 1))
+
+        # Stack the original coordinates with the new dummy coordinates
+        self.coordinates = np.vstack((self.coordinates, dummies))
+        self.solution = None
 
     def _get_heatmap(self, device='cpu', temperature=3.5) -> np.ndarray:
         """
@@ -66,6 +80,7 @@ class Instance:
         Returns:
             np.ndarray: NxN heatmap matrix
         """
+        self._add_dummies(100)
         num_nodes = self.get_number_of_nodes()
 
         # Map instance size to exact model configuration
@@ -457,13 +472,13 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
     )
 
 if __name__ == '__main__':
-    # instance = load_instance(0, InstanceType.ATT)
-    np.random.seed(42)
-    coordinates = list(np.random.rand(100, 2))
-
-    instance = Instance(
-        instance_type=InstanceType.EUC_2D,
-        instance_id=0,
-        coordinates=coordinates
-    )
+    instance = load_instance(0, InstanceType.ATT)
+    # np.random.seed(42)
+    # coordinates = list(np.random.rand(100, 2))
+    #
+    # instance = Instance(
+    #     instance_type=InstanceType.EUC_2D,
+    #     instance_id=0,
+    #     coordinates=coordinates
+    # )
     instance.solve(device='cuda')
