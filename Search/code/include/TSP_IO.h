@@ -16,7 +16,7 @@ using namespace std;
 #define Inf_Cost           1000000000
 #define Magnify_Rate       1000000
 #define Max_Inst_Num       128// change 128->10000 if working on TSP-20,50,100
-#define Max_City_Num       200
+#define Max_City_Num 100
 int Max_Candidate_Num = 5;
 int Max_Depth = 10;
 int restart;
@@ -43,7 +43,7 @@ double Stored_Coordinates_Y[Max_Inst_Num][Max_City_Num];
 int    Stored_Opt_Solution[Max_Inst_Num][Max_City_Num]; 
 int Inst_Num_Per_Batch=std::ceil(Total_Instance_Num / 32);
 //int Inst_Num_Per_Batch=int(Total_Instance_Num / 32); 
-//int Inst_Num_Per_Batch = 313;
+//int Inst_Num_Per_Batch = 1;
 int Index_In_Batch;
 int rec_only;
 int restart_reconly;

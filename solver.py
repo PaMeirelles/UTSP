@@ -7,8 +7,11 @@ from pathlib import Path
 from dataclasses import dataclass
 from scipy.spatial import distance_matrix
 import torch
+import tempfile
+import time
 from models import GNN
 from utils import get_heat_map
+from cpp_interface import *
 
 INSTANCE_FOLDER = 'data/new_instances'
 
@@ -51,7 +54,7 @@ class Instance:
     def get_number_of_nodes(self) -> int:
         return len(self.coordinates)
 
-    def _get_heatmap(self, device='cpu', temperature=3.5):
+    def _get_heatmap(self, device='cpu', temperature=3.5) -> np.ndarray:
         """
         Uses one of the trained networks to obtain the heatmap.
         Returns an NxN numpy array with edge probabilities.
@@ -129,6 +132,192 @@ class Instance:
 
         return heatmap_np
 
+    def _solve_instance(self, heatmap: np.ndarray, topk: int = 20,
+                       device: str = 'cpu', timeout: int = 300) -> SolverResult:
+        """
+        Solves the TSP instance using the C++ MCTS solver guided by the heatmap.
+
+        Args:
+            heatmap: NxN numpy array with edge probabilities
+            topk: Number of top edges to consider per node (default 20)
+            device: Device for computation (not used in solver, kept for API consistency)
+            timeout: Maximum time in seconds for the solver to run
+
+        Returns:
+            SolverResult with time, tour, and cost
+        """
+        num_nodes = self.get_number_of_nodes()
+
+        # Validate heatmap
+        if heatmap.shape != (num_nodes, num_nodes):
+            raise ValueError(f"Heatmap shape {heatmap.shape} doesn't match number of nodes {num_nodes}")
+
+        # Prepare solver parameters based on problem size
+        solver_params = get_solver_params(num_nodes)
+
+        # Create temporary directory for solver I/O
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir_path = Path(temp_dir)
+
+            # Write input file
+            input_file = temp_dir_path / 'instance.txt'
+            self._write_solver_input(input_file, heatmap, topk)
+
+            # Compile solver if needed
+            solver_executable = ensure_solver_compiled(num_nodes)
+
+            # Prepare output file
+            output_file = temp_dir_path / 'result.txt'
+
+            # Run solver
+            start_time = time.time()
+            run_solver(
+                solver_executable,
+                input_file,
+                output_file,
+                num_nodes,
+                solver_params,
+                topk,
+                timeout
+            )
+            solve_time = time.time() - start_time
+
+            # Parse results
+            tour, cost = self._parse_solver_output(output_file)
+
+            return SolverResult(time=solve_time, tour=tour, cost=cost)
+
+    def _write_solver_input(self, filename: Path, heatmap: np.ndarray, topk: int):
+        """Write input file in the format expected by the C++ solver."""
+        num_nodes = self.get_number_of_nodes()
+
+        with open(filename, 'w') as f:
+            # Write coordinates: x1 y1 x2 y2 ... xn yn
+            coords_flat = self.coordinates.flatten()
+            f.write(' '.join(map(str, coords_flat)))
+            f.write('\n')
+
+            # Write "output" followed by a dummy solution (1 2 3 ... n 1)
+            # The solver doesn't actually use this, but format requires it
+            f.write('output ')
+            dummy_solution = list(range(1, num_nodes + 1)) + [1]
+            f.write(' '.join(map(str, dummy_solution)))
+            f.write('\n')
+
+            # Extract top-k edges for each node based on heatmap
+            top_indices = []
+            top_values = []
+
+            for i in range(num_nodes):
+                # Get top-k neighbors for node i
+                node_edges = heatmap[i, :]
+                # Exclude self-loops
+                node_edges = node_edges.copy()
+                node_edges[i] = -1
+
+                # Get top-k indices (1-indexed for C++)
+                topk_idx = np.argsort(node_edges)[-topk:][::-1]
+                topk_vals = node_edges[topk_idx]
+
+                top_indices.extend((topk_idx + 1).tolist())  # Convert to 1-indexed
+                top_values.extend(topk_vals.tolist())
+
+            # Write "indices" followed by top-k indices for each node
+            f.write('indices ')
+            f.write(' '.join(map(str, top_indices)))
+            f.write('\n')
+
+            # Write "output" followed by heatmap values for those edges
+            f.write('output ')
+            f.write(' '.join(map(str, top_values)))
+            f.write('\n')
+
+    def _parse_solver_output(self, output_file: Path) -> Tuple[List[int], float]:
+        """Parse the solver output file to extract tour and cost."""
+        if not output_file.exists():
+            raise RuntimeError(f"Solver output file not found: {output_file}")
+
+        with open(output_file, 'r') as f:
+            lines = f.readlines()
+
+        tour = None
+        cost = None
+
+        for i, line in enumerate(lines):
+            line = line.strip()
+
+            # Look for cost in lines like "MCTS Distance:7.123456"
+            if 'MCTS' in line or 'Distance' in line:
+                # Extract cost from the line
+                parts = line.split()
+                for j, part in enumerate(parts):
+                    if 'Distance' in part and j + 1 < len(parts):
+                        try:
+                            cost_str = parts[j + 1]
+                            cost = float(cost_str)
+                            break
+                        except ValueError:
+                            continue
+
+            # Look for solution line
+            if line.startswith('Solution:'):
+                # Parse tour from "Solution: 1 2 3 ... n"
+                tour_str = line.replace('Solution:', '').strip()
+                tour = [int(x) - 1 for x in tour_str.split()]  # Convert to 0-indexed
+                # Remove duplicate start city if present
+                if len(tour) > 1 and tour[-1] == tour[0]:
+                    tour = tour[:-1]
+
+        if tour is None:
+            raise RuntimeError("Could not parse tour from solver output")
+
+        if cost is None:
+            # Calculate cost if not found in output
+            cost = self._calculate_tour_cost(tour)
+
+        return tour, cost
+
+    def _calculate_tour_cost(self, tour: List[int]) -> float:
+        """Calculate the total cost of a tour."""
+        cost = 0.0
+        num_nodes = len(tour)
+
+        for i in range(num_nodes):
+            city1 = tour[i]
+            city2 = tour[(i + 1) % num_nodes]
+
+            coord1 = self.coordinates[city1]
+            coord2 = self.coordinates[city2]
+
+            # Euclidean distance
+            dist = np.sqrt(np.sum((coord1 - coord2) ** 2))
+            cost += dist
+
+        return cost
+
+    def solve(self, device: str = 'cpu', temperature: float = 3.5,
+              topk: int = 20, timeout: int = 300) -> SolverResult:
+        """
+        Complete end-to-end solve: generate heatmap and solve TSP.
+
+        Args:
+            device: Device for heatmap generation ('cpu' or 'cuda')
+            temperature: Temperature parameter for heatmap generation
+            topk: Number of top edges to consider per node
+            timeout: Maximum time in seconds for the solver to run
+
+        Returns:
+            SolverResult with time, tour, and cost
+        """
+        # Generate heatmap
+        print(f"Generating heatmap for {self.get_number_of_nodes()}-node instance...")
+        heatmap = self._get_heatmap(device=device, temperature=temperature)
+
+        # Solve using heatmap
+        print("Solving TSP instance...")
+        result = self._solve_instance(heatmap, topk=topk, device=device, timeout=timeout)
+
+        return result
 
 
 def load_file(path: str) -> List[Instance]:
@@ -268,38 +457,13 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
     )
 
 if __name__ == '__main__':
-    # Test with a 100-node instance from test data
-    test_data_path = './data/default_instances/test_tsp_instance_100.npy'
+    # instance = load_instance(0, InstanceType.ATT)
+    np.random.seed(42)
+    coordinates = list(np.random.rand(100, 2))
 
-    if os.path.exists(test_data_path):
-        print("Testing with 100-node instance from test data")
-        tsp_instances = np.load(test_data_path)
-        print(f"Loaded {tsp_instances.shape[0]} test instances with {tsp_instances.shape[1]} nodes each")
-
-        # Create an instance from the first test case
-        instance = Instance(
-            instance_type=InstanceType.EUC_2D,
-            instance_id=0,
-            coordinates=tsp_instances[0]
-        )
-    else:
-        # Fallback: try to load from new_instances folder
-        print("Test data not found, trying to load from new_instances folder")
-        instance = load_instance(0, InstanceType.EUC_2D)
-
-    print(f"Instance has {instance.get_number_of_nodes()} nodes")
-    print(f"Coordinates shape: {instance.coordinates.shape}")
-
-    # Test heatmap generation
-    print("\nGenerating heatmap...")
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Using device: {device}")
-
-    try:
-        heatmap = instance._get_heatmap(device=device)
-        print(f"Heatmap shape: {heatmap.shape}")
-        print(f"Heatmap min: {heatmap.min():.6f}, max: {heatmap.max():.6f}")
-        print(f"Heatmap mean: {heatmap.mean():.6f}")
-        print("\nHeatmap generation successful!")
-    except ValueError as e:
-        print(f"Error: {e}")
+    instance = Instance(
+        instance_type=InstanceType.EUC_2D,
+        instance_id=0,
+        coordinates=coordinates
+    )
+    instance.solve(device='cuda')
