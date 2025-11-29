@@ -56,17 +56,40 @@ class Instance:
     def get_number_of_nodes(self) -> int:
         return len(self.coordinates)
 
-    def _add_dummies(self, target):
-        missing = target - self.get_number_of_nodes()
+    def _add_dummies(self, target: int):
+        current_n = self.get_number_of_nodes()
+        missing = target - current_n
+
         if missing <= 0:
             return
 
+        # 1. Update Coordinates
+        # Duplicate the first node (index 0) 'missing' times
         ref_node = self.coordinates[0]
         dummies = np.tile(ref_node, (missing, 1))
-
-        # Stack the original coordinates with the new dummy coordinates
         self.coordinates = np.vstack((self.coordinates, dummies))
-        self.solution = None
+
+        # 2. Update Solution (if exists)
+        if self.solution is not None:
+            # Generate the indices for the new dummy nodes
+            # e.g., if we had 100 nodes, dummies are 100, 101, 102...
+            dummy_indices = np.arange(current_n, target)
+
+            # Find the position of node 0 in the current solution
+            # np.where returns a tuple of arrays, we grab the first index found
+            try:
+                zero_pos = np.where(self.solution == 0)[0][0]
+
+                # Insert dummies immediately after node 0
+                # Structure: [Start ... 0] + [Dummies] + [Rest ...]
+                self.solution = np.concatenate((
+                    self.solution[:zero_pos + 1],
+                    dummy_indices,
+                    self.solution[zero_pos + 1:]
+                ))
+            except IndexError:
+                # Fallback: If 0 is not in solution for some reason, append dummies
+                self.solution = np.concatenate((self.solution, dummy_indices))
 
     def _get_heatmap(self, device='cpu', temperature=3.5) -> np.ndarray:
         """
