@@ -309,9 +309,7 @@ class Instance:
         if tour is None:
             raise RuntimeError("Could not parse tour from solver output")
 
-        if cost is None:
-            # Calculate cost if not found in output
-            cost = self._calculate_tour_cost(tour)
+        cost = self._calculate_tour_cost(tour)
 
         return tour, cost
 
@@ -495,7 +493,7 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
     )
 
 if __name__ == '__main__':
-    instance = load_instance(0, InstanceType.ATT)
+    instance = load_instance(0, InstanceType.EUC_2D)
     # np.random.seed(42)
     # coordinates = list(np.random.rand(100, 2))
     #
@@ -504,4 +502,5 @@ if __name__ == '__main__':
     #     instance_id=0,
     #     coordinates=coordinates
     # )
-    instance.solve(device='cuda')
+    r = instance.solve(device='cuda')
+    print(r)
