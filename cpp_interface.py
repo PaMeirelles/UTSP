@@ -159,7 +159,7 @@ def ensure_solver_compiled(num_nodes: int) -> Path:
 
 
 def run_solver(executable: Path, input_file: Path, output_file: Path,
-               num_nodes: int, params: dict, topk: int, timeout: int):
+               num_nodes: int, params: dict, topk: int, timeout: int, distance_type : int):
     """Run the C++ solver with specified parameters."""
 
     if not input_file.exists():
@@ -169,7 +169,7 @@ def run_solver(executable: Path, input_file: Path, output_file: Path,
         str(executable.resolve()), '0', str(output_file.resolve()), str(input_file.resolve()),
         str(num_nodes), '1', str(params['rec_only']), str(params['M']), str(params['K']),
         str(params['alpha']), str(params['beta']), str(params['ph']),
-        str(params['restart']), str(params['restart_rec'])
+        str(params['restart']), str(params['restart_rec']), str(distance_type)
     ]
 
     print(f"Running C++ Solver...")

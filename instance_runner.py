@@ -6,7 +6,7 @@ import concurrent.futures
 import time
 import os
 
-from solver import Instance, InstanceType, load_instance
+from solver import Instance, InstanceType, load_file, load_instance
 
 
 # --- Import your existing classes here if in a different file ---
@@ -46,6 +46,21 @@ class ExperimentRunner:
         self.results: List[ExperimentMetrics] = []
         self.instances: List[Instance] = []
 
+    def add_json_instances(self, path: str, instance_type: InstanceType):
+        """Add a single instance from JSON data."""
+        if instance_type == InstanceType.ATT:
+            instance_name = 'ATT'
+        elif instance_type == InstanceType.EUC_2D:
+            instance_name = 'EUC_2D'
+        elif instance_type == InstanceType.GEO:
+            instance_name = 'GEO'
+        else:
+            raise ValueError(f"Unsupported instance type: {instance_type}")
+
+        instances = load_file(path+'/'+instance_name+'/'+instance_name+'.json')
+        for inst in instances:
+            self.add_instance(inst)
+
     def add_instance(self, instance: Instance):
         """Add a single instance object to the experiment queue."""
         self.instances.append(instance)
@@ -68,7 +83,7 @@ class ExperimentRunner:
             return 0.0
         return ((solver_cost - optimal_cost) / optimal_cost) * 100.0
 
-    def _process_single_instance(self, instance: Instance) -> ExperimentMetrics:
+    def _process_single_instance(self, instance: Instance, distance_type: int = 0) -> ExperimentMetrics:
         """
         Internal wrapper to solve one instance and calculate metrics.
         """
@@ -94,7 +109,8 @@ class ExperimentRunner:
                 device=self.device,
                 temperature=self.temperature,
                 topk=self.topk,
-                timeout=self.timeout
+                timeout=self.timeout,
+                distanceType=distance_type
             )
             # Assuming 'result' has a 'solve_time' attribute from the call to instance.solve
             solve_time = getattr(result, 'solve_time', time.time() - start_total)
@@ -166,7 +182,7 @@ class ExperimentRunner:
             print(f"🚨 Error saving results to {filename}: {e}")
 
     # 2 & 3. Add an optional file param in the run method and save at the end
-    def run(self, max_workers: int = 1, file: Optional[str] = None) -> pd.DataFrame:
+    def run(self, max_workers: int = 1, file: Optional[str] = None, distance_type : int = InstanceType.EUC_2D) -> pd.DataFrame:
         """
         Run the experiments.
 
@@ -177,6 +193,16 @@ class ExperimentRunner:
             file: Optional filename (e.g., 'results.csv') to save the summary to
                   after execution.
         """
+
+        if(distance_type == InstanceType.GEO):
+            distance_type = 1
+        elif(distance_type == InstanceType.EUC_2D):
+            distance_type = 0
+        elif(distance_type == InstanceType.ATT):
+            distance_type = 2
+        
+        print('RUN DISTANCE TYPE: ', distance_type)
+
         print(f"🚀 Starting experiment on {len(self.instances)} instances...")
         print(f"Config: Device={self.device}, Temp={self.temperature}, TopK={self.topk}")
 
@@ -185,9 +211,9 @@ class ExperimentRunner:
         if max_workers > 1:
             # Parallel Execution
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Map instances to futures
+                # Map instances to futures (pass instance and distance_type as args)
                 future_to_inst = {
-                    executor.submit(self._process_single_instance, inst): inst
+                    executor.submit(self._process_single_instance, inst, distance_type): inst
                     for inst in self.instances
                 }
 
@@ -211,7 +237,7 @@ class ExperimentRunner:
                 iterator = tqdm(iterator, desc="Solving")
 
             for inst in iterator:
-                results_list.append(self._process_single_instance(inst))
+                results_list.append(self._process_single_instance(inst, distance_type))
 
         self.results = results_list
         summary_df = self.get_summary()

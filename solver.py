@@ -171,7 +171,7 @@ class Instance:
         return heatmap_np
 
     def _solve_instance(self, heatmap: np.ndarray, topk: int = 20,
-                       device: str = 'cpu', timeout: int = 300) -> SolverResult:
+                       device: str = 'cpu', timeout: int = 300, distance_type :int = 0) -> SolverResult:
         """
         Solves the TSP instance using the C++ MCTS solver guided by the heatmap.
 
@@ -216,7 +216,8 @@ class Instance:
                 num_nodes,
                 solver_params,
                 topk,
-                timeout
+                timeout,
+                distance_type
             )
             solve_time = time.time() - start_time
 
@@ -332,7 +333,7 @@ class Instance:
         return cost
 
     def solve(self, device: str = 'cpu', temperature: float = 3.5,
-              topk: int = 20, timeout: int = 300) -> SolverResult:
+              topk: int = 20, timeout: int = 300, distanceType : int = 0) -> SolverResult:
         """
         Complete end-to-end solve: generate heatmap and solve TSP.
 
@@ -351,7 +352,7 @@ class Instance:
 
         # Solve using heatmap
         print("Solving TSP instance...")
-        result = self._solve_instance(heatmap, topk=topk, device=device, timeout=timeout)
+        result = self._solve_instance(heatmap, topk=topk, device=device, timeout=timeout, distance_type = distanceType)
 
         return result
 
@@ -471,6 +472,8 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
     base_path = Path(INSTANCE_FOLDER) / type_name
     coords_file = base_path / f"{instance_name}.npy"
     sol_file = base_path / f"{instance_name}_sol.npy"
+
+    print(coords_file)
 
     # Check if coordinates file exists
     if not coords_file.exists():

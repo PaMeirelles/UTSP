@@ -101,6 +101,9 @@ struct Struct_Node
 Struct_Node *All_Node;        //Store the incumbent tour
 Struct_Node *Best_All_Node;   //Store the best found tour
 
+//Used to calculate distance between two cities
+int distance_type; // 0: Euclidean, 1: Geo, 2: ATT
+
 //Used to store a solution in an array 
 int *Solution;  
 

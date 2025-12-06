@@ -5,6 +5,53 @@ int Get_Random_Int(int Divide_Num)
   return rand()%Divide_Num;
 }
 
+
+double Calculate_Att_Distance(int First_City,int Second_City)
+{
+	double Rij = sqrt( (Coordinate_X[First_City]-Coordinate_X[Second_City])*(Coordinate_X[First_City]-Coordinate_X[Second_City]) +
+				   (Coordinate_Y[First_City]-Coordinate_Y[Second_City])*(Coordinate_Y[First_City]-Coordinate_Y[Second_City]) ) /10.0;
+  
+  	int Tij = (int)(Rij + 0.5);
+  
+  	if(Tij < Rij)
+		return Tij + 1;
+  	else
+		return Tij;
+}
+
+int Calculate_Int_Att_Distance(int First_City,int Second_City)
+{
+	return (int)(0.5 + Calculate_Att_Distance(First_City,Second_City));
+}
+
+
+//Calculate the geo distance between two cities, rounded to the nearest integer 
+double Calculate_Geo_Distance(int First_City,int Second_City)
+{
+	double RR = 6371;
+
+	double PI = 3.141592;
+
+	double Latitude_X1 = Coordinate_X[First_City]*PI/180.0;
+	double Latitude_X2 = Coordinate_X[Second_City]*PI/180.0;
+	double Longitude_Y1 = Coordinate_Y[First_City]*PI/180.0;
+	double Longitude_Y2 = Coordinate_Y[Second_City]*PI/180.0;
+
+	double a = pow(sin((Latitude_X2 - Latitude_X1)/2), 2) + 
+		cos(Latitude_X1)*cos(Latitude_X2) * 
+		pow(sin((Longitude_Y2 - Longitude_Y1)/2),2);
+
+	double c = 2 * atan2(sqrt(a), sqrt(1-a));
+
+	return RR*c;
+}
+
+int Calculate_Int_Geo_Distance(int First_City,int Second_City)
+{
+	return (int)(0.5 + Calculate_Geo_Distance(First_City,Second_City));
+}
+
+
 //Calculate the distance between two cities, rounded up to the nearest integer 
 int Calculate_Int_Distance(int First_City,int Second_City)
 {
@@ -19,18 +66,6 @@ double Calculate_Double_Distance(int First_City,int Second_City)
                    (Coordinate_Y[First_City]-Coordinate_Y[Second_City])*(Coordinate_Y[First_City]-Coordinate_Y[Second_City]) );
 }
 
-// Calculate the distance (integer) between any two cities, stored in Distance[][]
-void Calculate_All_Pair_Distance()
-{
-  	for(int i=0;i<Virtual_City_Num;i++)
-  		for(int j=0;j<Virtual_City_Num;j++)
-  		{
-	  		if(i!=j)
-	    		Distance[i][j]=Calculate_Int_Distance(i,j);  
-	  		else
-	    		Distance[i][j]=Inf_Cost;  	  
-		}  	 
-}
 
 // Fetch the distance (already stored in Distance[][]) between two cities 
 Distance_Type Get_Distance(int First_City,int Second_City)
@@ -133,40 +168,6 @@ Distance_Type Get_Solution_Total_Distance()
 }
 
 
-//For TSP20-50-100 instances
-// Return the total distance (double) of the solution stored in Stored_Opt_Solution[Inst_Index]
-double Get_Stored_Solution_Double_Distance(int Inst_Index)
-{
-	double Stored_Solution_Double_Distance=0;
-	for(int i=0;i<Virtual_City_Num-1;i++)
-		Stored_Solution_Double_Distance += Calculate_Double_Distance(Stored_Opt_Solution[Inst_Index][i],Stored_Opt_Solution[Inst_Index][i+1]);
-	
-	Stored_Solution_Double_Distance += Calculate_Double_Distance(Stored_Opt_Solution[Inst_Index][Virtual_City_Num-1],Stored_Opt_Solution[Inst_Index][0]);	
-	
-	return Stored_Solution_Double_Distance;
-}
-
-//For TSP20-50-100 instances
-// Return the total distance (double) of the solution stored in Struct_Node *All_Node
-double Get_Current_Solution_Double_Distance()
-{
-  	double Current_Solution_Double_Distance=0;
-  	for(int i=0;i<Virtual_City_Num;i++)
-  	{
-  		int Temp_Next_City=All_Node[i].Next_City;
-  		if(Temp_Next_City != Null)
-  	  		Current_Solution_Double_Distance += Calculate_Double_Distance(i,Temp_Next_City);
-  		else
-  		{
-  			printf("\nGet_Current_Solution_Double_Distance() fail!\n");
-  			getchar();
-  			return Inf_Cost;
-		}  	  		
-  	}	
-  
-  	return Current_Solution_Double_Distance;
-}
-
 // Return the unselected city neareast to Cur_City
 int Get_Neareast_Unselected_City(int Cur_City)
 {	
@@ -255,3 +256,80 @@ void Restore_Best_Solution()
 	}	 
 }
 
+
+
+double Calculate_Distance(int First_City, int Second_City, int type, bool integer_distance)
+{
+	if(type == 0) {
+		if(!integer_distance)
+			return (int)(0.5 + Calculate_Double_Distance(First_City, Second_City));
+		else
+			return Calculate_Int_Distance(First_City, Second_City);
+	} else if(type == 1) {
+		if(!integer_distance)
+			return (int)(0.5 + Calculate_Geo_Distance(First_City, Second_City));
+		else
+			return Calculate_Int_Geo_Distance(First_City, Second_City);
+	} else if(type == 2) {
+		if(!integer_distance)
+			return (int)(0.5 + Calculate_Att_Distance(First_City, Second_City));
+		else
+			return Calculate_Int_Att_Distance(First_City, Second_City);
+
+	}else
+	{
+		printf("\nCalculate_Distance(): wrong distance type!\n");
+		getchar();
+		return -1;
+	}
+}
+
+
+// Calculate the distance (integer) between any two cities, stored in Distance[][]
+void Calculate_All_Pair_Distance()
+{
+  	for(int i=0;i<Virtual_City_Num;i++)
+  		for(int j=0;j<Virtual_City_Num;j++)
+  		{
+	  		if(i!=j)
+	    		Distance[i][j]= Calculate_Distance(i,j,distance_type,true);// Calculate_Int_Distance(i,j);  
+	  		else
+	    		Distance[i][j]=Inf_Cost;  	  
+		}  	 
+}
+
+//For TSP20-50-100 instances
+// Return the total distance (double) of the solution stored in Stored_Opt_Solution[Inst_Index]
+double Get_Stored_Solution_Double_Distance(int Inst_Index)
+{
+	double Stored_Solution_Double_Distance=0;
+	for(int i=0;i<Virtual_City_Num-1;i++)
+		Stored_Solution_Double_Distance += Calculate_Distance(Stored_Opt_Solution[Inst_Index][i],Stored_Opt_Solution[Inst_Index][i+1], distance_type, false); //Calculate_Double_Distance(Stored_Opt_Solution[Inst_Index][i],Stored_Opt_Solution[Inst_Index][i+1]);
+	
+	Stored_Solution_Double_Distance += Calculate_Distance(Stored_Opt_Solution[Inst_Index][Virtual_City_Num-1],Stored_Opt_Solution[Inst_Index][0], distance_type, false); //Calculate_Double_Distance(Stored_Opt_Solution[Inst_Index][Virtual_City_Num-1],Stored_Opt_Solution[Inst_Index][0]);	
+	
+	return Stored_Solution_Double_Distance;
+}
+
+
+
+//For TSP20-50-100 instances
+// Return the total distance (double) of the solution stored in Struct_Node *All_Node
+double Get_Current_Solution_Double_Distance()
+{
+  	double Current_Solution_Double_Distance=0;
+  	for(int i=0;i<Virtual_City_Num;i++)
+  	{
+  		int Temp_Next_City=All_Node[i].Next_City;
+  		if(Temp_Next_City != Null)
+  	  		Current_Solution_Double_Distance += Calculate_Distance(i, Temp_Next_City, distance_type, false); //Calculate_Double_Distance(i,Temp_Next_City);
+  		else
+  		{
+  			printf("\nGet_Current_Solution_Double_Distance() fail!\n");
+  			getchar();
+  			return Inf_Cost;
+		}  	  		
+  	}	
+  
+  	return Current_Solution_Double_Distance;
+}

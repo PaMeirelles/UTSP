@@ -183,6 +183,7 @@ int main(int argc, char ** argv)
     Param_H = atof(argv[11]);
     restart = atoi(argv[12]);
     restart_reconly = atoi(argv[13]);
+	distance_type = atoi(argv[14]);
 
     cout << "record some exp parameters here: !!" << endl;
     cout << "Alpha: " << Alpha << endl;
@@ -194,6 +195,18 @@ int main(int argc, char ** argv)
     cout << "rec_only " << rec_only << endl;
     cout << "restart" << restart << endl;
     cout << "restart_reconly" << restart_reconly << endl;
+
+	if(distance_type == 0)
+		cout << "Distance Type: Euclidean" << endl;
+	else if(distance_type == 1)
+		cout << "Distance Type: Geo" << endl;
+	else if(distance_type == 2)
+		cout << "Distance Type: ATT" << endl;
+	else
+	{
+		cout << "Error! Unknown Distance Type!" << endl;
+		return -1;
+	}
 
 	Solve_Instances_In_Batch();
 

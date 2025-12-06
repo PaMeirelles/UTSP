@@ -9,7 +9,12 @@ import pickle
 from torch.utils.data import  Dataset,DataLoader# use pytorch dataloader
 from random import shuffle
 import numpy as np
+
+from geopy.distance import geodesic
+
+
 import argparse
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--seed', type=int, default=42, help='Random seed.')
 parser.add_argument('--num_of_nodes', type=int, default=200, help='Graph Size')
@@ -86,6 +91,34 @@ print(count_parameters(model))
 # https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.distance_matrix.html
 def coord_to_adj(coord_arr):
     dis_mat = distance_matrix(coord_arr,coord_arr)
+    return dis_mat
+
+def coord_to_adj_geo(coord_arr):
+    num_nodes = coord_arr.shape[0]
+    dis_mat = np.zeros((num_nodes,num_nodes))
+    for i in range(num_nodes):
+        for j in range(num_nodes):
+            if i!=j:
+                loc1 = (coord_arr[i][1],coord_arr[i][0]) # (lat,lon)
+                loc2 = (coord_arr[j][1],coord_arr[j][0])
+                dis_mat[i][j] = geodesic(loc1,loc2).meters
+    return 
+
+def coord_to_adj_att(coord_arr):
+    num_nodes = coord_arr.shape[0]
+    dis_mat = np.zeros((num_nodes,num_nodes))
+    for i in range(num_nodes):
+        for j in range(num_nodes):
+            if i!=j:
+                xd = coord_arr[i][0] - coord_arr[j][0]
+                yd = coord_arr[i][1] - coord_arr[j][1]
+                rij = np.sqrt( (xd*xd + yd*yd)/10.0 )
+                tij = round(rij)
+                if tij < rij:
+                    dij = tij + 1
+                else:
+                    dij = tij
+                dis_mat[i][j] = dij
     return dis_mat
 
 tsp_instances_adj = np.zeros((LENGDATA,args.num_of_nodes,args.num_of_nodes))
