@@ -3,7 +3,6 @@ from enum import Enum
 from typing import Optional, List, Tuple
 import numpy as np
 import json
-from pathlib import Path
 from dataclasses import dataclass
 from scipy.spatial import distance_matrix
 import torch
@@ -12,13 +11,24 @@ import time
 from models import GNN
 from utils import get_heat_map
 from cpp_interface import *
+from heuristic.sa import SimulatedAnnealing
+from heuristic.ils import IteratedLocalSearch
+from heuristic.heuristic_tsp_solver import HeuristicTSPSolution
 
 INSTANCE_FOLDER = 'data/new_instances'
+
 
 class InstanceType(Enum):
     ATT = 0
     EUC_2D = 1
     GEO = 2
+
+
+class SolverMethod(Enum):
+    MCTS = "mcts"
+    SA = "sa"
+    ILS = "ils"
+
 
 def instance_type_to_name(instance_type: InstanceType):
     if instance_type == InstanceType.ATT:
@@ -30,12 +40,12 @@ def instance_type_to_name(instance_type: InstanceType):
     else:
         raise ValueError('Unknown instance type')
 
+
 @dataclass
 class SolverResult:
     time: float
     tour: List[int]
     cost: float
-
 
 class Instance:
     def __init__(self, instance_type: InstanceType,
@@ -63,51 +73,34 @@ class Instance:
         if missing <= 0:
             return
 
-        # 1. Update Coordinates
-        # Duplicate the first node (index 0) 'missing' times
         ref_node = self.coordinates[0]
         dummies = np.tile(ref_node, (missing, 1))
         self.coordinates = np.vstack((self.coordinates, dummies))
 
-        # 2. Update Solution (if exists)
         if self.solution is not None:
-            # Generate the indices for the new dummy nodes
-            # e.g., if we had 100 nodes, dummies are 100, 101, 102...
             dummy_indices = np.arange(current_n, target)
-
-            # Find the position of node 0 in the current solution
-            # np.where returns a tuple of arrays, we grab the first index found
             try:
                 zero_pos = np.where(self.solution == 0)[0][0]
-
-                # Insert dummies immediately after node 0
-                # Structure: [Start ... 0] + [Dummies] + [Rest ...]
                 self.solution = np.concatenate((
                     self.solution[:zero_pos + 1],
                     dummy_indices,
                     self.solution[zero_pos + 1:]
                 ))
             except IndexError:
-                # Fallback: If 0 is not in solution for some reason, append dummies
                 self.solution = np.concatenate((self.solution, dummy_indices))
 
     def _get_heatmap(self, device='cpu', temperature=3.5) -> np.ndarray:
-        """
-        Uses one of the trained networks to obtain the heatmap.
-        Returns an NxN numpy array with edge probabilities.
-
-        Args:
-            device: 'cuda' or 'cpu' for computation
-            temperature: temperature parameter for adjacency matrix (default 3.5)
-
-        Returns:
-            np.ndarray: NxN heatmap matrix
-        """
+        sizes = [100, 200, 500, 1000]
+        size = None
+        for s in sizes:
+            if self.get_number_of_nodes() < s:
+                size = s
+                break
+        if size is None:
+            raise RuntimeError(f"Network size {size} is too big")
         self._add_dummies(100)
         num_nodes = self.get_number_of_nodes()
 
-        # Map instance size to exact model configuration
-        # Models are trained for specific sizes and must match exactly
         model_configs = {
             100: {'hidden_dim': 64, 'nlayers': 2, 'rescale': 1.0},
             200: {'hidden_dim': 64, 'nlayers': 2, 'rescale': 2.0},
@@ -117,245 +110,243 @@ class Instance:
 
         if num_nodes not in model_configs:
             available_sizes = list(model_configs.keys())
-            raise ValueError(
-                f"No trained model available for problem size {num_nodes}. "
-                f"Available sizes: {available_sizes}"
-            )
+            raise ValueError(f"No trained model available for size {num_nodes}")
 
-        model_size = num_nodes
         config = model_configs[num_nodes]
         hidden_dim = config['hidden_dim']
         nlayers = config['nlayers']
         rescale = config['rescale']
 
         # Load the model
-        model_path = f'Saved_Models/TSP_{model_size}/scatgnn_layer_{nlayers}_hid_{hidden_dim}_model_210_temp_{temperature:.3f}.pth'
+        model_path = f'Saved_Models/TSP_{num_nodes}/scatgnn_layer_{nlayers}_hid_{hidden_dim}_model_210_temp_{temperature:.3f}.pth'
         if not os.path.exists(model_path):
+            # Try fallback to generic naming if specific path fails, or just raise
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
-        # Create model instance (output_dim must match training size, not actual instance size)
-        model = GNN(input_dim=2, hidden_dim=hidden_dim, output_dim=model_size, n_layers=nlayers)
+        model = GNN(input_dim=2, hidden_dim=hidden_dim, output_dim=num_nodes, n_layers=nlayers)
         model.load_state_dict(torch.load(model_path, map_location=device))
         model = model.to(device)
         model.eval()
 
-        # Preprocess coordinates: normalize and rescale
         coords = self.coordinates.copy()
         mean = np.mean(coords, axis=0)
         coords = coords - mean
         coords = rescale * coords
 
-        # Create adjacency matrix from distances
         dist_matrix = distance_matrix(coords, coords)
 
-        # Convert to tensors and add batch dimension
-        coords_tensor = torch.FloatTensor(coords).unsqueeze(0).to(device)  # [1, N, 2]
-        dist_tensor = torch.FloatTensor(dist_matrix).unsqueeze(0).to(device)  # [1, N, N]
+        coords_tensor = torch.FloatTensor(coords).unsqueeze(0).to(device)
+        dist_tensor = torch.FloatTensor(dist_matrix).unsqueeze(0).to(device)
 
-        # Create adjacency matrix with temperature
         adj = torch.exp(-1.0 * dist_tensor / temperature)
-
-        # Mask diagonal
         mask = torch.ones(num_nodes, num_nodes).to(device)
         mask.fill_diagonal_(0)
         adj *= mask
 
-        # Run inference
         with torch.no_grad():
             output = model(coords_tensor, adj)
             heatmap = get_heat_map(output, num_nodes, device)
 
-        # Convert to numpy and remove batch dimension
-        heatmap_np = heatmap.squeeze(0).cpu().numpy()
+        return heatmap.squeeze(0).cpu().numpy()
 
-        return heatmap_np
-
-    def _solve_instance(self, heatmap: np.ndarray, topk: int = 20,
-                       device: str = 'cpu', timeout: int = 300) -> SolverResult:
+    def _solve_instance(self, heatmap: np.ndarray,
+                        method: SolverMethod = SolverMethod.MCTS,
+                        topk: int = 20,
+                        device: str = 'cpu',
+                        timeout: int = 300,
+                        **kwargs) -> SolverResult:
         """
-        Solves the TSP instance using the C++ MCTS solver guided by the heatmap.
-
-        Args:
-            heatmap: NxN numpy array with edge probabilities
-            topk: Number of top edges to consider per node (default 20)
-            device: Device for computation (not used in solver, kept for API consistency)
-            timeout: Maximum time in seconds for the solver to run
-
-        Returns:
-            SolverResult with time, tour, and cost
+        Dispatches the solve request to either the C++ MCTS solver or Python Heuristics.
         """
+
+        if method == SolverMethod.MCTS:
+            return self._solve_mcts(heatmap, topk, timeout)
+        elif method in [SolverMethod.SA, SolverMethod.ILS]:
+            return self._solve_python_heuristic(heatmap, method, topk, **kwargs)
+        else:
+            raise ValueError(f"Unknown solver method: {method}")
+
+    def _solve_mcts(self, heatmap: np.ndarray, topk: int, timeout: int) -> SolverResult:
+        """Existing C++ MCTS integration."""
         num_nodes = self.get_number_of_nodes()
-
-        # Validate heatmap
         if heatmap.shape != (num_nodes, num_nodes):
-            raise ValueError(f"Heatmap shape {heatmap.shape} doesn't match number of nodes {num_nodes}")
+            raise ValueError(f"Heatmap shape mismatch")
 
-        # Prepare solver parameters based on problem size
         solver_params = get_solver_params(num_nodes)
 
-        # Create temporary directory for solver I/O
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_dir_path = Path(temp_dir)
-
-            # Write input file
             input_file = temp_dir_path / 'instance.txt'
             self._write_solver_input(input_file, heatmap, topk)
 
-            # Compile solver if needed
             solver_executable = ensure_solver_compiled(num_nodes)
-
-            # Prepare output file
             output_file = temp_dir_path / 'result.txt'
 
-            # Run solver
             start_time = time.time()
-            run_solver(
-                solver_executable,
-                input_file,
-                output_file,
-                num_nodes,
-                solver_params,
-                topk,
-                timeout
-            )
+            run_solver(solver_executable, input_file, output_file, num_nodes,
+                       solver_params, topk, timeout)
             solve_time = time.time() - start_time
 
-            # Parse results
             tour, cost = self._parse_solver_output(output_file)
-
             return SolverResult(time=solve_time, tour=tour, cost=cost)
 
-    def _write_solver_input(self, filename: Path, heatmap: np.ndarray, topk: int):
-        """Write input file in the format expected by the C++ solver."""
-        num_nodes = self.get_number_of_nodes()
+    def _solve_python_heuristic(self, heatmap: np.ndarray,
+                                method: SolverMethod,
+                                topk: int,
+                                **kwargs) -> SolverResult:
+        """
+        Runs Python-based Simulated Annealing or ILS.
+        """
+        start_time = time.time()
 
+        # 1. Prepare Data for Python Solver
+        # Convert numpy coords to full distance matrix (List[List[float]])
+        dist_matrix_np = distance_matrix(self.coordinates, self.coordinates)
+        dist_matrix = dist_matrix_np.tolist()
+        heatmap_list = heatmap.tolist()
+
+        # 2. Initialize Heuristic Solver & Construct Initial Solution
+        solver = HeuristicTSPSolution(dist_matrix, heatmap_list, topk)
+        solver.construct_solution()  # Cheapest Insertion
+
+        final_solution = None
+
+        # 3. Run Metaheuristic
+        if method == SolverMethod.SA:
+            # Extract kwargs specific to SA
+            initial_temp = kwargs.get('initial_temp', 1000)
+            final_temp = kwargs.get('final_temp', 1)
+            cooling_rate = kwargs.get('cooling_rate', 0.9995)
+
+            sa = SimulatedAnnealing(
+                solution=solver,
+                initial_temp=initial_temp,
+                final_temp=final_temp,
+                cooling_rate=cooling_rate
+            )
+            final_solution = sa.solve(verbose=kwargs.get('verbose', False))
+
+        elif method == SolverMethod.ILS:
+            # Extract kwargs specific to ILS
+            max_iter = kwargs.get('max_iter', 100)
+            perturbation_strength = kwargs.get('perturbation_strength', 3)
+
+            ils = IteratedLocalSearch(
+                solution=solver,
+                max_iter=max_iter,
+                perturbation_strength=perturbation_strength
+            )
+            final_solution = ils.run(report_stats=kwargs.get('verbose', False))
+
+        solve_time = time.time() - start_time
+
+        # 4. Extract Results
+        # Assuming final_solution object has .solution (tour) and .evaluate() (cost)
+        # Check if final_solution is the object or we need to access attributes
+        tour = final_solution.tour
+
+        # Ensure tour is clean (no duplicate end node)
+        if len(tour) > 0 and tour[0] == tour[-1] and len(tour) > 1:
+            tour = tour[:-1]
+
+        cost = final_solution.get_solution_cost() if hasattr(final_solution,
+                                                             'get_solution_cost') else final_solution.evaluate()
+
+        return SolverResult(time=solve_time, tour=tour, cost=cost)
+
+    def _write_solver_input(self, filename: Path, heatmap: np.ndarray, topk: int):
+        # ... (Existing implementation) ...
+        num_nodes = self.get_number_of_nodes()
         with open(filename, 'w') as f:
-            # Write coordinates: x1 y1 x2 y2 ... xn yn
             coords_flat = self.coordinates.flatten()
             f.write(' '.join(map(str, coords_flat)))
             f.write('\n')
-
-            # Write "output" followed by a dummy solution (1 2 3 ... n 1)
-            # The solver doesn't actually use this, but format requires it
             f.write('output ')
             dummy_solution = list(range(1, num_nodes + 1)) + [1]
             f.write(' '.join(map(str, dummy_solution)))
             f.write('\n')
-
-            # Extract top-k edges for each node based on heatmap
             top_indices = []
             top_values = []
-
             for i in range(num_nodes):
-                # Get top-k neighbors for node i
                 node_edges = heatmap[i, :]
-                # Exclude self-loops
                 node_edges = node_edges.copy()
                 node_edges[i] = -1
-
-                # Get top-k indices (1-indexed for C++)
                 topk_idx = np.argsort(node_edges)[-topk:][::-1]
                 topk_vals = node_edges[topk_idx]
-
-                top_indices.extend((topk_idx + 1).tolist())  # Convert to 1-indexed
+                top_indices.extend((topk_idx + 1).tolist())
                 top_values.extend(topk_vals.tolist())
-
-            # Write "indices" followed by top-k indices for each node
             f.write('indices ')
             f.write(' '.join(map(str, top_indices)))
             f.write('\n')
-
-            # Write "output" followed by heatmap values for those edges
             f.write('output ')
             f.write(' '.join(map(str, top_values)))
             f.write('\n')
 
     def _parse_solver_output(self, output_file: Path) -> Tuple[List[int], float]:
-        """Parse the solver output file to extract tour and cost."""
+        # ... (Existing implementation) ...
         if not output_file.exists():
-            raise RuntimeError(f"Solver output file not found: {output_file}")
-
+            raise RuntimeError(f"Solver output file not found")
         with open(output_file, 'r') as f:
             lines = f.readlines()
-
         tour = None
         cost = None
-
         for i, line in enumerate(lines):
             line = line.strip()
-
-            # Look for cost in lines like "MCTS Distance:7.123456"
             if 'MCTS' in line or 'Distance' in line:
-                # Extract cost from the line
                 parts = line.split()
                 for j, part in enumerate(parts):
                     if 'Distance' in part and j + 1 < len(parts):
                         try:
-                            cost_str = parts[j + 1]
-                            cost = float(cost_str)
+                            cost = float(parts[j + 1])
                             break
                         except ValueError:
                             continue
-
-            # Look for solution line
             if line.startswith('Solution:'):
-                # Parse tour from "Solution: 1 2 3 ... n"
                 tour_str = line.replace('Solution:', '').strip()
-                tour = [int(x) - 1 for x in tour_str.split()]  # Convert to 0-indexed
-                # Remove duplicate start city if present
+                tour = [int(x) - 1 for x in tour_str.split()]
                 if len(tour) > 1 and tour[-1] == tour[0]:
                     tour = tour[:-1]
-
         if tour is None:
-            raise RuntimeError("Could not parse tour from solver output")
-
+            raise RuntimeError("Could not parse tour")
         cost = self._calculate_tour_cost(tour)
-
         return tour, cost
 
     def _calculate_tour_cost(self, tour: List[int]) -> float:
-        """Calculate the total cost of a tour."""
         cost = 0.0
         num_nodes = len(tour)
-
         for i in range(num_nodes):
             city1 = tour[i]
             city2 = tour[(i + 1) % num_nodes]
-
             coord1 = self.coordinates[city1]
             coord2 = self.coordinates[city2]
-
-            # Euclidean distance
             dist = np.sqrt(np.sum((coord1 - coord2) ** 2))
             cost += dist
-
         return cost
 
-    def solve(self, device: str = 'cpu', temperature: float = 3.5,
-              topk: int = 20, timeout: int = 300) -> SolverResult:
+    def solve(self,
+              device: str = 'cpu',
+              temperature: float = 3.5,
+              topk: int = 20,
+              method: SolverMethod = SolverMethod.MCTS,
+              timeout: int = 300,
+              **kwargs) -> SolverResult:
         """
-        Complete end-to-end solve: generate heatmap and solve TSP.
-
-        Args:
-            device: Device for heatmap generation ('cpu' or 'cuda')
-            temperature: Temperature parameter for heatmap generation
-            topk: Number of top edges to consider per node
-            timeout: Maximum time in seconds for the solver to run
-
-        Returns:
-            SolverResult with time, tour, and cost
+        Complete end-to-end solve.
+        pass kwargs like 'max_iter' (ILS) or 'initial_temp' (SA).
         """
-        # Generate heatmap
         print(f"Generating heatmap for {self.get_number_of_nodes()}-node instance...")
         heatmap = self._get_heatmap(device=device, temperature=temperature)
 
-        # Solve using heatmap
-        print("Solving TSP instance...")
-        result = self._solve_instance(heatmap, topk=topk, device=device, timeout=timeout)
-
+        print(f"Solving TSP instance using {method.value}...")
+        result = self._solve_instance(
+            heatmap,
+            method=method,
+            topk=topk,
+            device=device,
+            timeout=timeout,
+            **kwargs
+        )
         return result
-
-
 def load_file(path: str) -> List[Instance]:
     # Each file is named <instance_type>.json
     # Inside, there is a list of jsons with fields "coords" and 'tour'
@@ -453,9 +444,9 @@ def save_instances(instances: List[Instance]) -> None:
             np.save(coords_file, instance.coordinates)
 
             # Save solution as {name}_sol.npy if it exists
-            if instance.solution is not None:
+            if instance.tour is not None:
                 sol_file = type_folder / f"{instance_name}_sol.npy"
-                np.save(sol_file, instance.solution)
+                np.save(sol_file, instance.tour)
                 print(f"Saved instance {instance_name}: {coords_file} and {sol_file}")
             else:
                 print(f"Saved instance {instance_name}: {coords_file} (no solution)")
@@ -492,15 +483,26 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
         solution=solution
     )
 
+
 if __name__ == '__main__':
     instance = load_instance(0, InstanceType.EUC_2D)
-    # np.random.seed(42)
-    # coordinates = list(np.random.rand(100, 2))
-    #
-    # instance = Instance(
-    #     instance_type=InstanceType.EUC_2D,
-    #     instance_id=0,
-    #     coordinates=coordinates
+
+    # # Run with Simulated Annealing
+    # res_sa = instance.solve(
+    #     method=SolverMethod.SA,
+    #     device='cuda',
+    #     initial_temp=2000,
+    #     cooling_rate=0.995,
+    #     verbose=True
     # )
-    r = instance.solve(device='cuda')
-    print(r)
+    # print(f"SA Result: {res_sa.cost:.2f}")
+
+    # Run with Iterated Local Search
+    res_ils = instance.solve(
+        method=SolverMethod.ILS,
+        device='cuda',
+        max_iter=50,
+        perturbation_strength=4,
+        verbose=True
+    )
+    print(f"ILS Result: {res_ils.cost:.2f}")
