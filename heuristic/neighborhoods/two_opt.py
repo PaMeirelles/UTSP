@@ -57,7 +57,7 @@ class TwoOpt(BaseNeighborhood[TwoOptArgs]):
         # Edges added
         added = dist[node_i][node_j] + dist[node_i_next][node_j_next]
 
-        return current_cost - removed + added
+        return added - removed
 
     def execute(self, move_args: TwoOptArgs) -> None:
         """
@@ -130,7 +130,7 @@ class TwoOpt(BaseNeighborhood[TwoOptArgs]):
 
                 # We check < best_cost - epsilon to handle float inaccuracies
                 cost = self.evaluate(move)
-                if cost < best_cost - 1e-6:
+                if cost < 0:
                     return move, cost
 
         return None

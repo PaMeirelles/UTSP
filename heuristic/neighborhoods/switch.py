@@ -69,7 +69,7 @@ class Switch(BaseNeighborhood[SwitchArgs]):
             delta -= (dist[u_prev][u] + dist[u][u_next] + dist[v_prev][v] + dist[v][v_next])
             delta += (dist[u_prev][v] + dist[v][u_next] + dist[v_prev][u] + dist[u][v_next])
 
-        return self.solution.get_solution_cost() + delta
+        return delta
 
     def execute(self, move_args: SwitchArgs) -> None:
         """
@@ -106,7 +106,6 @@ class Switch(BaseNeighborhood[SwitchArgs]):
         """
         tour = self.solution.tour
         n = len(tour)
-        best_cost = self.solution.get_solution_cost()
         city_indices = self.solution.city_indices
 
         for i in range(n):
@@ -123,7 +122,7 @@ class Switch(BaseNeighborhood[SwitchArgs]):
 
                 move = SwitchArgs(i, j)
                 cost = self.evaluate(move)
-                if cost < best_cost - 1e-6:
+                if cost < 0:
                     return move, cost
 
         return None

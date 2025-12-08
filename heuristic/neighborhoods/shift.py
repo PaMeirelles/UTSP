@@ -64,7 +64,7 @@ class Shift(BaseNeighborhood[ShiftArgs]):
         # Addition (edges formed by inserting u)
         delta += dist[v_prev][u] + dist[u][v]
 
-        return current_cost + delta
+        return delta
 
     def execute(self, move_args: ShiftArgs) -> None:
         """
@@ -121,7 +121,6 @@ class Shift(BaseNeighborhood[ShiftArgs]):
         """
         tour = self.solution.tour
         n = len(tour)
-        best_cost = self.solution.get_solution_cost()
 
         # Map city ID to its current index in the tour for O(1) lookup
         # This is essential for the heuristic search to find 'v's index quickly
@@ -144,7 +143,7 @@ class Shift(BaseNeighborhood[ShiftArgs]):
                 if i != j and j != (i + 1) % n:
                     move = ShiftArgs(i, j)
                     new_cost = self.evaluate(move)
-                    if new_cost < best_cost - 1e-6:  # Use tolerance for float comparison
+                    if new_cost < 0:  # Use tolerance for float comparison
                         return move, new_cost
 
                 # Candidate 2: Insert u AFTER v (target index j + 1)
@@ -153,7 +152,7 @@ class Shift(BaseNeighborhood[ShiftArgs]):
                 if i != target_after and target_after != (i + 1) % n:
                     move = ShiftArgs(i, target_after)
                     new_cost = self.evaluate(move)
-                    if new_cost < best_cost - 1e-6:
+                    if new_cost < 0:
                         return move, new_cost
 
         return None

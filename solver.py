@@ -196,12 +196,50 @@ class Instance:
                                 **kwargs) -> SolverResult:
         """
         Runs Python-based Simulated Annealing or ILS.
+        Includes specific distance matrix calculation for ATT (Pseudo-Euclidean) and GEO (Geographical) types.
         """
         start_time = time.time()
 
-        # 1. Prepare Data for Python Solver
-        # Convert numpy coords to full distance matrix (List[List[float]])
-        dist_matrix_np = distance_matrix(self.coordinates, self.coordinates)
+        # 1. Prepare Data for Python Solver: Calculate Distance Matrix based on Instance Type
+        if self.instance_type == InstanceType.EUC_2D:
+            dist_matrix_np = distance_matrix(self.coordinates, self.coordinates)
+
+        elif self.instance_type == InstanceType.ATT:
+            # TSPLIB Pseudo-Euclidean: d_ij = ceil( sqrt( (dx^2 + dy^2) / 10 ) )
+            diff = self.coordinates[:, np.newaxis, :] - self.coordinates[np.newaxis, :, :]
+            sq_dist = np.sum(diff ** 2, axis=-1)
+            dist_matrix_np = np.ceil(np.sqrt(sq_dist / 10.0))
+
+        elif self.instance_type == InstanceType.GEO:
+            # TSPLIB Geographical Distance
+            # 1. Convert to radians: rad = PI * (deg + 5.0 * min / 3.0) / 180.0
+            deg = np.trunc(self.coordinates)
+            mins = self.coordinates - deg
+            rads = np.pi * (deg + 5.0 * mins / 3.0) / 180.0
+
+            lats = rads[:, 0]
+            lons = rads[:, 1]
+            RRR = 6378.388
+
+            # 2. Pairwise Cosine calculations for Great Circle Formula
+            # q1 = cos(lon_i - lon_j)
+            q1 = np.cos(lons[:, np.newaxis] - lons[np.newaxis, :])
+            # q2 = cos(lat_i - lat_j)
+            q2 = np.cos(lats[:, np.newaxis] - lats[np.newaxis, :])
+            # q3 = cos(lat_i + lat_j)
+            q3 = np.cos(lats[:, np.newaxis] + lats[np.newaxis, :])
+
+            val = 0.5 * ((1.0 + q1) * q2 - (1.0 - q1) * q3)
+            # Clip val to [-1, 1] to avoid numerical errors in arccos
+            val = np.clip(val, -1.0, 1.0)
+
+            # d_ij = floor( RRR * arccos(val) + 1.0 )
+            dist_matrix_np = np.floor(RRR * np.arccos(val) + 1.0)
+
+        else:
+            raise ValueError(f"Unsupported instance type for Python solver: {self.instance_type}")
+
+        # Convert numpy matrix to list for the Heuristic Solver
         dist_matrix = dist_matrix_np.tolist()
         heatmap_list = heatmap.tolist()
 
@@ -241,8 +279,6 @@ class Instance:
         solve_time = time.time() - start_time
 
         # 4. Extract Results
-        # Assuming final_solution object has .solution (tour) and .evaluate() (cost)
-        # Check if final_solution is the object or we need to access attributes
         tour = final_solution.tour
 
         # Ensure tour is clean (no duplicate end node)
@@ -253,6 +289,7 @@ class Instance:
                                                              'get_solution_cost') else final_solution.evaluate()
 
         return SolverResult(time=solve_time, tour=tour, cost=cost)
+
 
     def _write_solver_input(self, filename: Path, heatmap: np.ndarray, topk: int):
         # ... (Existing implementation) ...
