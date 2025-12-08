@@ -1,0 +1,2 @@
+instance_name,num_nodes,solver_cost,optimal_cost,gap_percent,total_time,status
+EUC_2D_0,100,2.9030677377778757,2.9030677377778753,1.5297238988642625e-14,8.913949728012085,SUCCESS

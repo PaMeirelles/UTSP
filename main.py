@@ -18,14 +18,16 @@ distance_type = args.distancetype
 TOPK_VALUES = [20, 40, 60, 80, 100]
 INSTANCE_TYPES = [InstanceType.ATT, InstanceType.EUC_2D, InstanceType.GEO]
 NUM_INSTANCES_PER_TYPE = 10
-OUTPUT_FILE = "run_2.csv"
 
 if(distance_type == 'GEO'):
     distance_type = InstanceType.GEO
+    OUTPUT_FILE = 'run_2_geo.csv'
 elif(distance_type == 'EUC_2D'):
     distance_type = InstanceType.EUC_2D
+    OUTPUT_FILE = 'run_2_euc_2d.csv'
 elif(distance_type == 'ATT'):
     distance_type = InstanceType.ATT
+    OUTPUT_FILE = 'run_2_att.csv'
 
 if __name__ == "__main__":
     runner = ExperimentRunner(device='cuda')

@@ -1,0 +1,2 @@
+instance_name,num_nodes,solver_cost,optimal_cost,gap_percent,total_time,status
+ATT_0,100,26452.80257519344,26452.802575193444,-1.3752715980662436e-14,8.945998191833496,SUCCESS

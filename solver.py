@@ -387,6 +387,7 @@ def load_file(path: str) -> List[Instance]:
         coords = item['coords']
         tour = item.get('tour', None)  # Optional
 
+        print(f"Loaded instance {idx} of type {type_name} with {len(coords)} nodes.")
         instance = Instance(
             instance_type=instance_type,
             instance_id=idx,

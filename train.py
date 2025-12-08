@@ -9,8 +9,9 @@ import pickle
 from torch.utils.data import  Dataset,DataLoader# use pytorch dataloader
 from random import shuffle
 import numpy as np
-
+import json
 from geopy.distance import geodesic
+import math
 
 
 import argparse
@@ -46,6 +47,8 @@ parser.add_argument('--stepsize', type=int, default=20,
                     help='step size')
 parser.add_argument('--diag_loss', type=float, default=0.1,
                     help='penalty on the diag')
+parser.add_argument('--distancetype', type=str, default='EUC_2D',
+                    help='distancetype')
 args = parser.parse_args()
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -54,8 +57,20 @@ torch.cuda.manual_seed(args.seed)
 np.random.seed(args.seed)
 ### load train instance
 
-tsp_instances = np.load('./data/train_tsp_instance_%d.npy'%args.num_of_nodes)
-NumofTestSample = tsp_instances.shape[0]
+#tsp_instances_orig = np.load('./data/default_instances/train_tsp_instance_%d.npy'%args.num_of_nodes)
+
+tsp_instances = []
+tsp_sols = []
+with open(f'./data/new_instances/{args.distancetype}/{args.distancetype}_Orig.json', 'r') as f:
+    allCoords = json.load(f)
+    for coords in allCoords:
+        if(len(coords['coords']) == args.num_of_nodes):
+            tsp_instances.append(np.array(coords['coords'], dtype=np.float64))
+            tsp_sols.append(np.array(coords['tour'], dtype=np.int64))
+
+tsp_instances = np.array(tsp_instances)
+
+NumofTestSample = len(tsp_instances)
 
 Std = np.std(tsp_instances, axis=1)
 Mean = np.mean(tsp_instances, axis=1)
@@ -64,14 +79,15 @@ Mean = np.mean(tsp_instances, axis=1)
 tsp_instances = tsp_instances - Mean.reshape((NumofTestSample,1,2))
 #tsp_instances = np.divide(tsp_instances,Std.reshape((NumofTestSample,1,2)))
 tsp_instances = args.rescale * tsp_instances # 2.0 is the rescale
-tsp_sols = np.load('./data/train_tsp_sol_%d.npy'%args.num_of_nodes)
 
+#tsp_sols = np.load('./data/train_tsp_sol_%d.npy'%args.num_of_nodes)
+#print(tsp_sols)
 
 
 dataset_scale = 1
 LENGDATA = tsp_instances.shape[0]
 total_samples = int(np.floor(LENGDATA*dataset_scale))
-import json
+
 preposs_time = time.time()
 
 from models import GNN
@@ -94,15 +110,16 @@ def coord_to_adj(coord_arr):
     return dis_mat
 
 def coord_to_adj_geo(coord_arr):
+    pi = math.pi
     num_nodes = coord_arr.shape[0]
     dis_mat = np.zeros((num_nodes,num_nodes))
     for i in range(num_nodes):
         for j in range(num_nodes):
             if i!=j:
-                loc1 = (coord_arr[i][1],coord_arr[i][0]) # (lat,lon)
-                loc2 = (coord_arr[j][1],coord_arr[j][0])
+                loc1 = (float(coord_arr[i][1]*pi/180),float(coord_arr[i][0]*pi/180))
+                loc2 = (float(coord_arr[j][1]*pi/180),float(coord_arr[j][0]*pi/180))
                 dis_mat[i][j] = geodesic(loc1,loc2).meters
-    return 
+    return dis_mat
 
 def coord_to_adj_att(coord_arr):
     num_nodes = coord_arr.shape[0]
@@ -122,8 +139,16 @@ def coord_to_adj_att(coord_arr):
     return dis_mat
 
 tsp_instances_adj = np.zeros((LENGDATA,args.num_of_nodes,args.num_of_nodes))
+print('Preparing distance matrices. Using distance type:',args.distancetype)
+distancetype = args.distancetype
 for i in range(LENGDATA):
-    tsp_instances_adj[i] = coord_to_adj(tsp_instances[i])
+    if(distancetype == 'EUC_2D'):
+        tsp_instances_adj[i] = coord_to_adj(tsp_instances[i])
+    elif(distancetype == 'GEO'):
+        tsp_instances_adj[i] = coord_to_adj_geo(tsp_instances[i])
+    elif(distancetype == 'ATT'):
+        tsp_instances_adj[i] = coord_to_adj_att(tsp_instances[i])
+
 #print(coord_to_adj(tsp_instances[0]))
 class TSP_Dataset(Dataset):
     def __init__(self, coord,data, targets):
@@ -178,7 +203,9 @@ def train(epoch):
         Heat_mat_diagonals = torch.stack(Heat_mat_diagonals, dim=0)
         Nrmlzd_constraint = (1. - torch.sum(output,2))**2
         Nrmlzd_constraint = torch.sum(Nrmlzd_constraint)
+        
         loss = args.C1_penalty * Nrmlzd_constraint + 1.*torch.sum(TSPLoss_constaint) + args.diag_loss*torch.sum(Heat_mat_diagonals)
+        
         batchloss = torch.sum(loss)/len(batch[0])
 
         print('Loss: %.5f'%batchloss.item())
@@ -186,7 +213,9 @@ def train(epoch):
         batchloss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(),1)
         optimizer.step()
+
+
 for i in range(1,args.EPOCHS+1):
     train(i)
     if (i>=200)and(i%10 == 0):
-        torch.save(model.state_dict(),'Saved_Models/TSP_%d/scatgnn_layer_%d_hid_%d_model_%d_temp_%.3f.pth'%(args.num_of_nodes,args.nlayers,args.hidden,i,args.temperature))
+        torch.save(model.state_dict(),'Saved_Models/'+distancetype+'/TSP_%d/scatgnn_layer_%d_hid_%d_model_%d_temp_%.3f.pth'%(args.num_of_nodes,args.nlayers,args.hidden,i,args.temperature))

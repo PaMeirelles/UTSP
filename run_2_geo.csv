@@ -1,0 +1,2 @@
+instance_name,num_nodes,solver_cost,optimal_cost,gap_percent,total_time,status
+GEO_0,100,1989.8604679931386,1475.9306414038338,34.82073020047064,8.935524702072144,SUCCESS

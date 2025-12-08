@@ -11,6 +11,8 @@ def GCN_diffusion(W,order,feature,device='cuda'):
     A_gcn = W + I_n #[b,n,n]
     ###
     degrees = torch.sum(A_gcn,2)
+    # avoid division by zero: clamp degrees to a small positive value
+    degrees = degrees.clamp(min=1e-8)
     degrees = degrees.unsqueeze(dim=2) # [b,n,1]
     D = degrees
     ##
@@ -40,7 +42,8 @@ def SCT1stv2(W,order,feature):
     '''
     degrees = torch.sum(W,2)
     D = degrees
-#    D = D.to_dense() # transfer D from sparse tensor to normal torch tensor
+    # avoid division by zero: clamp degrees to a small positive value
+    D = D.clamp(min=1e-8)
     D = torch.pow(D, -1)
     D = D.unsqueeze(dim=2)
     iteration = 2**order
