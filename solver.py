@@ -1,9 +1,10 @@
 import os
+import random
 from enum import Enum
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 import numpy as np
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from scipy.spatial import distance_matrix
 import torch
 import tempfile
@@ -56,9 +57,9 @@ class Instance:
         self.instance_id = instance_id
         self.coordinates = np.array(coordinates)
         if solution is not None:
-            self.solution = np.array(solution)
+            self.tour = np.array(solution)
         else:
-            self.solution = None
+            self.tour = None
 
     def get_name(self) -> str:
         return f"{instance_type_to_name(self.instance_type)}_{self.instance_id}"
@@ -77,17 +78,17 @@ class Instance:
         dummies = np.tile(ref_node, (missing, 1))
         self.coordinates = np.vstack((self.coordinates, dummies))
 
-        if self.solution is not None:
+        if self.tour is not None:
             dummy_indices = np.arange(current_n, target)
             try:
-                zero_pos = np.where(self.solution == 0)[0][0]
-                self.solution = np.concatenate((
-                    self.solution[:zero_pos + 1],
+                zero_pos = np.where(self.tour == 0)[0][0]
+                self.tour = np.concatenate((
+                    self.tour[:zero_pos + 1],
                     dummy_indices,
-                    self.solution[zero_pos + 1:]
+                    self.tour[zero_pos + 1:]
                 ))
             except IndexError:
-                self.solution = np.concatenate((self.solution, dummy_indices))
+                self.tour = np.concatenate((self.tour, dummy_indices))
 
     def _get_heatmap(self, device='cpu', temperature=3.5) -> np.ndarray:
         sizes = [100, 200, 500, 1000]
@@ -98,7 +99,7 @@ class Instance:
                 break
         if size is None:
             raise RuntimeError(f"Network size {size} is too big")
-        self._add_dummies(100)
+        self._add_dummies(size)
         num_nodes = self.get_number_of_nodes()
 
         model_configs = {
@@ -268,11 +269,12 @@ class Instance:
             # Extract kwargs specific to ILS
             max_iter = kwargs.get('max_iter', 100)
             perturbation_strength = kwargs.get('perturbation_strength', 3)
-
+            improvement_mode = kwargs.get('improvement_mode', "first")
             ils = IteratedLocalSearch(
                 solution=solver,
                 max_iter=max_iter,
-                perturbation_strength=perturbation_strength
+                perturbation_strength=perturbation_strength,
+                improvement_mode = improvement_mode
             )
             final_solution = ils.run(report_stats=kwargs.get('verbose', False))
 
@@ -522,24 +524,39 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
 
 
 if __name__ == '__main__':
-    instance = load_instance(0, InstanceType.EUC_2D)
-
-    # # Run with Simulated Annealing
+    instance = load_instance(10000, InstanceType.EUC_2D)
+    # print(len(instance.coordinates))
+    # random.seed()
+    # # # Run with Simulated Annealing
     # res_sa = instance.solve(
     #     method=SolverMethod.SA,
     #     device='cuda',
     #     initial_temp=2000,
     #     cooling_rate=0.995,
-    #     verbose=True
+    #     verbose=True,
+    #     topk = 20,
     # )
     # print(f"SA Result: {res_sa.cost:.2f}")
+    # print(res_sa.tour)
 
     # Run with Iterated Local Search
-    res_ils = instance.solve(
-        method=SolverMethod.ILS,
-        device='cuda',
-        max_iter=50,
-        perturbation_strength=4,
-        verbose=True
-    )
-    print(f"ILS Result: {res_ils.cost:.2f}")
+    # res_ils = instance.solve(
+    #     method=SolverMethod.ILS,
+    #     device='cuda',
+    #     max_iter=50,
+    #     perturbation_strength=4,
+    #     verbose=True,
+    #     topk=20,
+    # )
+    # _ = instance.solve(
+    #     method=SolverMethod.ILS,
+    #     device='cuda',
+    #     max_iter=50,
+    #     perturbation_strength=4,
+    #     verbose=True,
+    #     topk=100,
+    # )
+    # print(f"ILS Result: {res_ils.cost:.2f}")
+
+    # folder = load_file(r"C:\UTSP\data\raw_json\EUC_2D.json")
+    # save_instances(folder)

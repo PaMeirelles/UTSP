@@ -1,5 +1,5 @@
 import random
-from typing import Tuple
+from typing import Tuple, Literal
 from dataclasses import dataclass
 from heuristic.neighborhoods.base_neighborhood import BaseNeighborhood
 
@@ -49,8 +49,6 @@ class TwoOpt(BaseNeighborhood[TwoOptArgs]):
         node_j_next = tour[idx_j_next]
 
         # 4. Calculate Delta
-        current_cost = self.solution.get_solution_cost()
-
         # Edges removed
         removed = dist[node_i][node_i_next] + dist[node_j][node_j_next]
 
@@ -91,21 +89,24 @@ class TwoOpt(BaseNeighborhood[TwoOptArgs]):
                 continue
 
             move = TwoOptArgs(i, j)
-            self.execute(move)
             return move
 
         return None
 
-    def search(self) -> Tuple[TwoOptArgs, float] | None:
+    def search(self, improvement_mode: Literal["first", "best"] = "first") -> Tuple[TwoOptArgs, float] | None:
         """
         Searches for an improving 2-opt move using the nearest neighbor heatmap.
-        We iterate through edges (u, v) in the heatmap and check if introducing
-        edge (u, v) into the tour (via a 2-opt move) improves the cost.
+
+        Args:
+            improvement_mode: "first" returns the first negative delta found.
+                              "best" checks all heatmap candidates and returns the most negative delta.
         """
         tour = self.solution.tour
         n = len(tour)
-        best_cost = self.solution.get_solution_cost()
         city_indices = self.solution.city_indices
+
+        best_move = None
+        best_delta = 0.0
 
         for i in range(n):
             u = tour[i]
@@ -116,9 +117,6 @@ class TwoOpt(BaseNeighborhood[TwoOptArgs]):
 
                 j = city_indices[v]
 
-                # To form edge (u, v) where u is at i and v is at j:
-                # We can perform a 2-opt cut between i and j.
-
                 # Canonicalize for the move format (low, high)
                 idx1, idx2 = sorted((i, j))
 
@@ -128,9 +126,17 @@ class TwoOpt(BaseNeighborhood[TwoOptArgs]):
 
                 move = TwoOptArgs(idx1, idx2)
 
-                # We check < best_cost - epsilon to handle float inaccuracies
-                cost = self.evaluate(move)
-                if cost < 0:
-                    return move, cost
+                delta = self.evaluate(move)
+
+                if delta < best_delta:
+                    if improvement_mode == "first":
+                        return move, delta
+
+                    # Update best found
+                    best_delta = delta
+                    best_move = move
+
+        if best_move is not None:
+            return best_move, best_delta
 
         return None

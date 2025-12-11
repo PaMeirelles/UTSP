@@ -1,5 +1,5 @@
 import random
-from typing import Tuple
+from typing import Tuple, Literal
 from dataclasses import dataclass
 from heuristic.neighborhoods.base_neighborhood import BaseNeighborhood
 
@@ -95,23 +95,28 @@ class Switch(BaseNeighborhood[SwitchArgs]):
                 continue
 
             move = SwitchArgs(i, j)
-            self.execute(move)
             return move
 
         return None
 
-    def search(self) -> Tuple[SwitchArgs, float] | None:
+    def search(self, improvement_mode: Literal["first", "best"] = "first") -> Tuple[SwitchArgs, float] | None:
         """
-        Searches for the first improving swap move using heatmap
+        Searches for an improving swap move using heatmap.
+
+        Args:
+            improvement_mode: "first" returns the first negative delta found.
+                              "best" checks all heatmap candidates and returns the most negative delta.
         """
         tour = self.solution.tour
         n = len(tour)
         city_indices = self.solution.city_indices
 
+        best_move = None
+        best_delta = 0.0
+
         for i in range(n):
             u = tour[i]
             # Optimization: Only try swapping u with its nearest neighbors (v)
-            # rather than every other city in the tour.
             for v, _ in self.solution.edges[u]:
                 if v == u: continue
 
@@ -121,8 +126,17 @@ class Switch(BaseNeighborhood[SwitchArgs]):
                 if i == j: continue
 
                 move = SwitchArgs(i, j)
-                cost = self.evaluate(move)
-                if cost < 0:
-                    return move, cost
+                delta = self.evaluate(move)
+
+                if delta < best_delta:
+                    if improvement_mode == "first":
+                        return move, delta
+
+                    # Update best found
+                    best_delta = delta
+                    best_move = move
+
+        if best_move is not None:
+            return best_move, best_delta
 
         return None

@@ -3,7 +3,7 @@ import copy
 import random
 import math
 from dataclasses import dataclass
-from typing import Any, List
+from typing import Any, List, Literal
 
 from heuristic.heuristic_tsp_solver import HeuristicTSPSolution
 from heuristic.neighborhoods.base_neighborhood import BaseNeighborhood
@@ -19,15 +19,15 @@ class NeighborhoodCall:
     improvement: float
 
 
-def local_search(solution: HeuristicTSPSolution):
+def local_search(solution: HeuristicTSPSolution, improvement_mode: Literal["first", "best"]):
     """
     Executa busca local VND.
     """
     neighborhoods = [
-            Shift,
-            Switch,
-            TwoOpt,
-        ]
+        Shift,
+        Switch,
+        TwoOpt,
+    ]
     k = 0
     calls: List[NeighborhoodCall] = []
     while k < len(neighborhoods):
@@ -35,17 +35,20 @@ def local_search(solution: HeuristicTSPSolution):
         neighborhood = nb_class(solution)
 
         start = time.time()
-        result = neighborhood.search()
+        result = neighborhood.search(improvement_mode)
+
         if result is not None:
-            move, delta = neighborhood.search()
+            move, delta = result
         else:
             move = None
-            delta = 0
+            delta = 0.0
+
         end = time.time()
 
         duration = end - start
         call = NeighborhoodCall(duration, neighborhood, delta)
         calls.append(call)
+
         if move:
             neighborhood.execute(move)
             k = 0
@@ -82,7 +85,8 @@ class IteratedLocalSearch:
                  max_iter: int = 100,
                  perturbation_strength: int = 3,
                  initial_temp: float = 2000.0,
-                 cooling_rate: float = 0.95):
+                 cooling_rate: float = 0.95,
+                 improvement_mode: Literal["first", "best"] = "first"):
 
         self.solution = solution
         self.max_iter = max_iter
@@ -90,6 +94,7 @@ class IteratedLocalSearch:
         self.initial_temp = initial_temp
         self.cooling_rate = cooling_rate
         self.calls: List[NeighborhoodCall] = []
+        self.improvement_mode = improvement_mode
 
     def report_stats(self):
         """
@@ -135,12 +140,12 @@ class IteratedLocalSearch:
 
     def run(self, report_stats: bool = False):
         start_time = time.time()
-        print("--- Iniciando ILS Híbrido (JSON) ---")
+        print(f"--- Iniciando ILS Híbrido (Mode: {self.improvement_mode}) ---")
 
         s_curr = self.solution.clone()
 
         # Chama a função simples
-        calls = local_search(s_curr)
+        calls = local_search(s_curr, improvement_mode=self.improvement_mode)
         self.calls += calls
 
         s_best = copy.deepcopy(s_curr)
@@ -148,14 +153,14 @@ class IteratedLocalSearch:
         cost_curr = cost_best
 
         temp = self.initial_temp
-        print(f"Custo Inicial: {cost_best:.2f}")
+        print(f"Custo Inicial: {cost_best:.3f}")
 
         for i in range(self.max_iter):
             s_candidate = copy.deepcopy(s_curr)
 
             # Chama passando a força (o código lá em cima trata se for int)
             perturbation(s_candidate, self.perturbation_strength)
-            calls = local_search(s_candidate)
+            calls = local_search(s_candidate, improvement_mode=self.improvement_mode)
             self.calls += calls
 
             cost_candidate = s_candidate.get_solution_cost()
@@ -184,7 +189,7 @@ class IteratedLocalSearch:
                 if cost_curr < cost_best:
                     s_best = copy.deepcopy(s_curr)
                     cost_best = cost_curr
-                    print(f"  -> Iter {i}: Novo melhor! {cost_best:.2f}")
+                    print(f"  -> Iter {i}: Novo melhor! {cost_best:.3f}")
 
             temp *= self.cooling_rate
 

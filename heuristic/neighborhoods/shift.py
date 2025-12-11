@@ -1,5 +1,5 @@
 import random
-from typing import Tuple
+from typing import Tuple, Literal
 from heuristic.neighborhoods.base_neighborhood import BaseNeighborhood
 from dataclasses import dataclass
 
@@ -109,50 +109,62 @@ class Shift(BaseNeighborhood[ShiftArgs]):
             if source_idx == target_idx or target_idx == (source_idx + 1) % n:
                 continue
 
-            self.execute(move)
             return move
 
         return None
 
-    def search(self) -> Tuple[ShiftArgs, float] | None:
+    def search(self, improvement_mode: Literal["first", "best"] = "first") -> Tuple[ShiftArgs, float] | None:
         """
         Searches for an improving shift move using the heatmap (nearest neighbors).
-        For each node 'u', we try to insert it next to its nearest neighbors 'v'.
+
+        Args:
+            improvement_mode: "first" returns the first negative delta found.
+                              "best" checks all heatmap candidates and returns the most negative delta.
         """
         tour = self.solution.tour
         n = len(tour)
-
-        # Map city ID to its current index in the tour for O(1) lookup
-        # This is essential for the heuristic search to find 'v's index quickly
         city_indices = self.solution.city_indices
+
+        best_move = None
+        best_delta = 0.0
 
         # For every node u in the tour
         for i in range(n):
             u = tour[i]
 
             # Look at u's nearest neighbors (from heatmap/edges)
-            # self.solution.edges[u] is a list of (neighbor_id, distance)
             for v, _ in self.solution.edges[u]:
                 if v == u: continue
 
                 j = city_indices[v]
 
-                # Candidate 1: Insert u BEFORE v (target index j)
-                # We check if this is a valid move (not i == j and not i == j-1)
-                # Note: evaluate handles the no-op logic, but we skip obvious ones for speed
+                # --- Candidate 1: Insert u BEFORE v (target index j) ---
                 if i != j and j != (i + 1) % n:
                     move = ShiftArgs(i, j)
-                    new_cost = self.evaluate(move)
-                    if new_cost < 0:  # Use tolerance for float comparison
-                        return move, new_cost
+                    delta = self.evaluate(move)
 
-                # Candidate 2: Insert u AFTER v (target index j + 1)
-                # Inserting at j+1 puts u between v and v_next
+                    if delta < best_delta:
+                        if improvement_mode == "first":
+                            return move, delta
+                        # Update best found so far
+                        best_delta = delta
+                        best_move = move
+
+                # --- Candidate 2: Insert u AFTER v (target index j + 1) ---
                 target_after = (j + 1) % n
                 if i != target_after and target_after != (i + 1) % n:
                     move = ShiftArgs(i, target_after)
-                    new_cost = self.evaluate(move)
-                    if new_cost < 0:
-                        return move, new_cost
+                    delta = self.evaluate(move)
+
+                    if delta < best_delta:
+                        if improvement_mode == "first":
+                            return move, delta
+                        # Update best found so far
+                        best_delta = delta
+                        best_move = move
+
+        # If mode is "best" (or "first" finished without finding anything), return the best found
+        if best_move is not None:
+            return best_move, best_delta
 
         return None

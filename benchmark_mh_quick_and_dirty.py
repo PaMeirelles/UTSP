@@ -1,129 +1,204 @@
 import pandas as pd
-from tqdm import tqdm
+import numpy as np
 import time
-from typing import List
-from solver import load_instance, InstanceType, SolverMethod
+import torch
+import warnings
+from scipy.spatial import distance_matrix
 
-# --- CONFIGURATION ---
-# Define the range of Top-K values you want to test
-TOPK_VALUES = [20, 40, 60, 80, 100]
-
-# Define the methods to run
-METHODS = [SolverMethod.SA, SolverMethod.ILS]
-
-# Instance settings
-INSTANCE_TYPES = [InstanceType.EUC_2D, InstanceType.GEO, InstanceType.ATT]
-INSTANCE_IDS = range(10)  # Run on the first 20 instances (adjust as needed)
-DEVICE = 'cuda'  # Use 'cpu' if CUDA is not available
-
-# Hyperparameters for Heuristics (passed as kwargs to solve)
-# These override the defaults in solver.py
-SA_PARAMS = {
-    'initial_temp': 2000,
-    'cooling_rate': 0.9995,
-    'verbose': False
-}
-
-ILS_PARAMS = {
-    'max_iter': 100,
-    'perturbation_strength': 3,
-    'verbose': False
-}
+# Import your existing modules
+# Ensure your project structure allows these imports
+from solver import load_instance, InstanceType, SolverMethod, Instance, SolverResult
+from heuristic.heuristic_tsp_solver import HeuristicTSPSolution
+from heuristic.ils import IteratedLocalSearch
+from heuristic.sa import SimulatedAnnealing
 
 
-def run_benchmark(instance_type, instance_ids: List[int], output_file: str = "heuristic_results.csv"):
-    results = []
+# --- 1. Helper Function to Extract Stats from ILS ---
+def extract_ils_stats(ils_solver):
+    """
+    Aggregates statistics from the raw list of NeighborhoodCalls.
+    Returns a flat dictionary suitable for CSV rows.
+    """
+    # Temporary storage
+    agg_stats = {}
 
-    print(f"--- Starting Benchmark ---")
-    print(f"Methods: {[m.value for m in METHODS]}")
-    print(f"Top-K: {TOPK_VALUES}")
-    print(f"Instances: {len(instance_ids)} ({instance_type.name})")
+    for call in ils_solver.calls:
+        name = type(call.neighborhood_type).__name__
 
-    # Load instances first to avoid reloading them from disk multiple times
-    instances = []
-    print("\nLoading instances...")
-    for idx in tqdm(instance_ids, desc="Loading"):
-        try:
-            inst = load_instance(idx, instance_type)
-            instances.append(inst)
-        except Exception as e:
-            print(f"Warning: Could not load instance {idx}: {e}")
+        if name not in agg_stats:
+            agg_stats[name] = {
+                'count': 0,
+                'total_imp': 0.0,
+                'total_time': 0.0
+            }
 
-    # Main Benchmark Loop
-    # We iterate: Instance -> TopK -> Method
-    total_iterations = len(instances) * len(TOPK_VALUES) * len(METHODS)
-    pbar = tqdm(total=total_iterations, desc="Solving")
+        agg_stats[name]['count'] += 1
+        agg_stats[name]['total_imp'] += call.improvement
+        agg_stats[name]['total_time'] += call.duration
 
-    for inst in instances:
-        for topk in TOPK_VALUES:
-            for method in METHODS:
+    # Flatten for CSV (e.g., 'Shift_calls', 'Shift_roi')
+    flat_stats = {}
+    all_neighborhoods = ['Shift', 'Switch', 'TwoOpt']  # Ensure we have columns even if 0 calls
 
-                # Select parameters based on method
-                kwargs = {}
-                if method == SolverMethod.SA:
-                    kwargs = SA_PARAMS
-                elif method == SolverMethod.ILS:
-                    kwargs = ILS_PARAMS
+    for name in all_neighborhoods:
+        data = agg_stats.get(name, {'count': 0, 'total_imp': 0.0, 'total_time': 0.0})
 
-                try:
-                    start_time = time.time()
+        count = data['count']
+        t_imp = data['total_imp']
+        t_time = data['total_time']
 
-                    # Run the solver
-                    res = inst.solve(
-                        device=DEVICE,
-                        temperature=3.5,  # Temperature for Heatmap generation
-                        topk=topk,
-                        method=method,
-                        timeout=300,
-                        **kwargs  # Pass specific params (e.g. max_iter)
-                    )
+        flat_stats[f"{name}_calls"] = count
+        flat_stats[f"{name}_imp_tot"] = t_imp
+        flat_stats[f"{name}_time_tot"] = t_time
+        flat_stats[f"{name}_imp_avg"] = t_imp / count if count > 0 else 0.0
+        flat_stats[f"{name}_time_avg"] = t_time / count if count > 0 else 0.0
+        # ROI: Improvement per Second
+        flat_stats[f"{name}_roi"] = t_imp / t_time if t_time > 0 else 0.0
 
-                    elapsed = time.time() - start_time
+    return flat_stats
 
-                    # Store results
-                    results.append({
-                        "instance_id": inst.instance_id,
-                        "num_nodes": inst.get_number_of_nodes(),
-                        "method": method.value,
-                        "top_k": topk,
-                        "cost": res.cost,
-                        "time": res.time,
-                        "total_time": elapsed,  # Includes heatmap generation
-                        "tour_length": len(res.tour) if res.tour else 0
-                    })
 
-                except Exception as e:
-                    print(f"\nError solving Instance {inst.instance_id} [{method.value}, k={topk}]: {e}")
-                    # Optionally append a failure record
-                    results.append({
-                        "instance_id": inst.instance_id,
-                        "num_nodes": inst.get_number_of_nodes(),
-                        "method": method.value,
-                        "top_k": topk,
-                        "cost": -1,
-                        "time": 0,
-                        "total_time": 0,
-                        "tour_length": 0
-                    })
+# --- 2. Patch the Solver to Capture Stats ---
+# We redefine the internal python solver method to extract stats before returning
+def _solve_python_heuristic_patched(self, heatmap: np.ndarray,
+                                    method: SolverMethod,
+                                    topk: int,
+                                    **kwargs) -> SolverResult:
+    start_time = time.time()
 
-                pbar.update(1)
-
-    pbar.close()
-
-    # Create DataFrame and Save
-    if results:
-        df = pd.DataFrame(results)
-        df.to_csv(output_file, index=False)
-        print(f"\n✅ Results saved to {output_file}")
-
-        # Display a quick summary
-        print("\n--- Summary (Average Cost) ---")
-        summary = df[df['cost'] > 0].groupby(['method', 'top_k'])['cost'].mean()
-        print(summary)
+    # A. Calculate Distance Matrix (Copied logic from your solver.py)
+    if self.instance_type == InstanceType.EUC_2D:
+        dist_matrix_np = distance_matrix(self.coordinates, self.coordinates)
+    elif self.instance_type == InstanceType.ATT:
+        diff = self.coordinates[:, np.newaxis, :] - self.coordinates[np.newaxis, :, :]
+        sq_dist = np.sum(diff ** 2, axis=-1)
+        dist_matrix_np = np.ceil(np.sqrt(sq_dist / 10.0))
+    elif self.instance_type == InstanceType.GEO:
+        # Simplified GEO logic (assuming your solver.py logic is correct/imported)
+        # For brevity, reusing the EUC logic or throwing error if you strictly need GEO in this script
+        # Assuming we are running EUC_2D as requested.
+        dist_matrix_np = distance_matrix(self.coordinates, self.coordinates)
     else:
-        print("\n❌ No results generated.")
+        raise ValueError(f"Unsupported type: {self.instance_type}")
+
+    dist_matrix = dist_matrix_np.tolist()
+    heatmap_list = heatmap.tolist()
+
+    # B. Initialize & Construct
+    solver = HeuristicTSPSolution(dist_matrix, heatmap_list, topk)
+    solver.construct_solution()
+
+    final_solution = None
+    captured_stats = {}
+
+    # C. Run Method
+    if method == SolverMethod.ILS:
+        ils = IteratedLocalSearch(
+            solution=solver,
+            max_iter=kwargs.get('max_iter', 100),
+            perturbation_strength=kwargs.get('perturbation_strength', 3),
+            improvement_mode=kwargs.get('improvement_mode', "first")
+        )
+        final_solution = ils.run(report_stats=False)
+
+        # [CRITICAL STEP] Extract the stats before 'ils' is lost
+        captured_stats = extract_ils_stats(ils)
+
+    elif method == SolverMethod.SA:
+        # Fallback for SA if needed
+        sa = SimulatedAnnealing(solution=solver, initial_temp=kwargs.get('initial_temp', 1000))
+        final_solution = sa.solve()
+
+    solve_time = time.time() - start_time
+
+    # D. Finalize
+    tour = final_solution.tour
+    if len(tour) > 0 and tour[0] == tour[-1] and len(tour) > 1:
+        tour = tour[:-1]
+
+    cost = final_solution.get_solution_cost()
+
+    # Return result AND attach stats dynamically
+    res = SolverResult(time=solve_time, tour=tour, cost=cost)
+    res.stats = captured_stats  # Attach stats dictionary to result object
+    return res
+
+
+# Apply the patch to the Instance class
+Instance._solve_python_heuristic = _solve_python_heuristic_patched
+
+
+# --- 3. Run Experiment ---
+def run_experiment():
+    # Config
+    NUM_INSTANCES = 20
+    TOP_K_VALUES = [20, 60, 100]
+    MAX_ITER = 50
+    PERTURBATION = 4
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    print(f"Starting Experiment on {DEVICE}...")
+
+    all_records = []
+
+    for topk in TOP_K_VALUES:
+        print(f"\n--- Processing TopK = {topk} ---")
+
+        for i in range(NUM_INSTANCES):
+            try:
+                # Load
+                instance = load_instance(instance_id=i, instance_type=InstanceType.EUC_2D)
+
+                # Solve (using patched method)
+                result = instance.solve(
+                    method=SolverMethod.ILS,
+                    device=DEVICE,
+                    topk=topk,
+                    max_iter=MAX_ITER,
+                    perturbation_strength=PERTURBATION,
+                    verbose=False
+                )
+
+                # Record Data
+                record = {
+                    "Instance_ID": i,
+                    "TopK": topk,
+                    "Cost": result.cost,
+                    "Time_Total": result.time,
+                }
+
+                # Merge the stats into the record
+                if hasattr(result, 'stats'):
+                    record.update(result.stats)
+
+                all_records.append(record)
+
+                if (i + 1) % 10 == 0:
+                    print(f"  Completed {i + 1}/100")
+
+            except Exception as e:
+                print(f"  Error instance {i}: {e}")
+
+    # --- Save ---
+    if all_records:
+        df = pd.DataFrame(all_records)
+
+        # Organize columns: ID, TopK, Cost, Time, then the stats
+        cols = ['Instance_ID', 'TopK', 'Cost', 'Time_Total']
+        stat_cols = [c for c in df.columns if c not in cols]
+        df = df[cols + stat_cols]
+
+        filename = "ils_detailed_stats.csv"
+        df.to_csv(filename, index=False)
+        print(f"\nSaved detailed statistics to {filename}")
+
+        # Print a snippet of ROI stats
+        roi_cols = [c for c in df.columns if 'roi' in c]
+        print("\nAverage ROI (Improvement/Sec) by TopK:")
+        print(df.groupby('TopK')[roi_cols].mean())
+    else:
+        print("No results collected.")
 
 
 if __name__ == "__main__":
-    for instance_type in INSTANCE_TYPES:
-        run_benchmark(instance_type, list(INSTANCE_IDS))
+    run_experiment()

@@ -76,13 +76,13 @@ class ExperimentRunner:
 
         # 1. Calculate Optimal Cost (Ground Truth) if available
         optimal_cost = None
-        if instance.solution is not None:
+        if instance.tour is not None:
             # We assume instance.solution is a list/array of indices.
             # We use the instance's own method to calculate cost to ensure consistency.
             # Note: We need to cast numpy array to list for the existing method
             try:
                 # Assuming the Instance class has a method like this
-                optimal_cost = instance._calculate_tour_cost(instance.solution.tolist())
+                optimal_cost = instance._calculate_tour_cost(instance.tour.tolist())
             except Exception as e:
                 if self.verbose:
                     print(f"Error calculating optimal cost for {instance.get_name()}: {e}")
