@@ -49,6 +49,7 @@ class SolverResult:
     cost: float
     calls: Optional[List[NeighborhoodCall]] = None
 
+
 class Instance:
     def __init__(self, instance_type: InstanceType,
                  instance_id: int,
@@ -121,7 +122,6 @@ class Instance:
         # Load the model
         model_path = f'Saved_Models/{distance_name}/TSP_{num_nodes}/scatgnn_layer_{nlayers}_hid_{hidden_dim}_model_210_temp_{temperature:.3f}.pth'
         if not os.path.exists(model_path):
-            # Try fallback to generic naming if specific path fails, or just raise
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
         model = GNN(input_dim=2, hidden_dim=hidden_dim, output_dim=num_nodes, n_layers=nlayers)
@@ -156,10 +156,6 @@ class Instance:
                         device: str = 'cpu',
                         timeout: int = 300,
                         **kwargs) -> SolverResult:
-        """
-        Dispatches the solve request to either the C++ MCTS solver or Python Heuristics.
-        """
-
         if method == SolverMethod.MCTS:
             return self._solve_mcts(heatmap, topk, timeout)
         elif method in [SolverMethod.SA, SolverMethod.ILS]:
@@ -168,7 +164,6 @@ class Instance:
             raise ValueError(f"Unknown solver method: {method}")
 
     def _solve_mcts(self, heatmap: np.ndarray, topk: int, timeout: int) -> SolverResult:
-        """Existing C++ MCTS integration."""
         num_nodes = self.get_number_of_nodes()
         if heatmap.shape != (num_nodes, num_nodes):
             raise ValueError(f"Heatmap shape mismatch")
@@ -191,60 +186,92 @@ class Instance:
             tour, cost = self._parse_solver_output(output_file)
             return SolverResult(time=solve_time, tour=tour, cost=cost)
 
+    # --- Distance Calculation Logic ---
+
+    def _to_geo_rad(self, coords: np.ndarray) -> np.ndarray:
+        """Helper to convert TSPLIB GEO coordinates to radians."""
+        deg = np.trunc(coords)
+        mins = coords - deg
+        # TSPLIB formula: PI * (deg + 5.0 * min / 3.0) / 180.0
+        return np.pi * (deg + 5.0 * mins / 3.0) / 180.0
+
+    def _calculate_distances(self, c1: np.ndarray, c2: np.ndarray) -> np.ndarray:
+        """
+        Calculates distances between two arrays of coordinates c1 and c2.
+        Supports broadcasting (e.g., for matrix generation vs pairwise check).
+        """
+        if self.instance_type == InstanceType.EUC_2D:
+            diff = c1 - c2
+            return np.sqrt(np.sum(diff ** 2, axis=-1))
+
+        elif self.instance_type == InstanceType.ATT:
+            # TSPLIB Pseudo-Euclidean
+            diff = c1 - c2
+            sq_dist = np.sum(diff ** 2, axis=-1)
+            # d_ij = ceil( sqrt( (dx^2 + dy^2) / 10 ) )
+            return np.ceil(np.sqrt(sq_dist / 10.0))
+
+        elif self.instance_type == InstanceType.GEO:
+            # TSPLIB Geographical Distance
+            r1 = self._to_geo_rad(c1)
+            r2 = self._to_geo_rad(c2)
+
+            lats1, lons1 = r1[..., 0], r1[..., 1]
+            lats2, lons2 = r2[..., 0], r2[..., 1]
+
+            RRR = 6378.388
+
+            q1 = np.cos(lons1 - lons2)
+            q2 = np.cos(lats1 - lats2)
+            q3 = np.cos(lats1 + lats2)
+
+            val = 0.5 * ((1.0 + q1) * q2 - (1.0 - q1) * q3)
+            val = np.clip(val, -1.0, 1.0)
+
+            return np.floor(RRR * np.arccos(val) + 1.0)
+
+        else:
+            raise ValueError(f"Unsupported instance type: {self.instance_type}")
+
+    def calculate_tour_cost(self, tour: List[int]) -> float:
+        """
+        Calculates the exact cost of the tour using the instance-specific metric.
+        Vectorized for performance.
+        """
+        # Create coordinate arrays based on the tour
+        # P: [node_0, node_1, ..., node_N]
+        # P_next: [node_1, node_2, ..., node_0] (Shifted)
+
+        tour_indices = np.array(tour)
+        if len(tour_indices) < self.get_number_of_nodes():
+            # Safety check if tour is incomplete, though rarely used in this context
+            pass
+
+        p = self.coordinates[tour_indices]
+        p_next = np.roll(p, -1, axis=0)
+
+        distances = self._calculate_distances(p, p_next)
+        return float(np.sum(distances))
+
     def _solve_python_heuristic(self, heatmap: np.ndarray,
                                 method: SolverMethod,
                                 topk: int,
                                 **kwargs) -> SolverResult:
         """
-        Runs Python-based Simulated Annealing or ILS.
-        Includes specific distance matrix calculation for ATT (Pseudo-Euclidean) and GEO (Geographical) types.
+        Runs Python-based SA or ILS using unified distance logic.
         """
         start_time = time.time()
 
-        # 1. Prepare Data for Python Solver: Calculate Distance Matrix based on Instance Type
-        if self.instance_type == InstanceType.EUC_2D:
-            dist_matrix_np = distance_matrix(self.coordinates, self.coordinates)
+        # 1. Prepare Distance Matrix using broadcasted _calculate_distances
+        # Shape: (N, 1, 2) vs (1, N, 2) -> Result (N, N)
+        coords = self.coordinates
+        dist_matrix_np = self._calculate_distances(coords[:, np.newaxis, :], coords[np.newaxis, :, :])
 
-        elif self.instance_type == InstanceType.ATT:
-            # TSPLIB Pseudo-Euclidean: d_ij = ceil( sqrt( (dx^2 + dy^2) / 10 ) )
-            diff = self.coordinates[:, np.newaxis, :] - self.coordinates[np.newaxis, :, :]
-            sq_dist = np.sum(diff ** 2, axis=-1)
-            dist_matrix_np = np.ceil(np.sqrt(sq_dist / 10.0))
-
-        elif self.instance_type == InstanceType.GEO:
-            # TSPLIB Geographical Distance
-            # 1. Convert to radians: rad = PI * (deg + 5.0 * min / 3.0) / 180.0
-            deg = np.trunc(self.coordinates)
-            mins = self.coordinates - deg
-            rads = np.pi * (deg + 5.0 * mins / 3.0) / 180.0
-
-            lats = rads[:, 0]
-            lons = rads[:, 1]
-            RRR = 6378.388
-
-            # 2. Pairwise Cosine calculations for Great Circle Formula
-            # q1 = cos(lon_i - lon_j)
-            q1 = np.cos(lons[:, np.newaxis] - lons[np.newaxis, :])
-            # q2 = cos(lat_i - lat_j)
-            q2 = np.cos(lats[:, np.newaxis] - lats[np.newaxis, :])
-            # q3 = cos(lat_i + lat_j)
-            q3 = np.cos(lats[:, np.newaxis] + lats[np.newaxis, :])
-
-            val = 0.5 * ((1.0 + q1) * q2 - (1.0 - q1) * q3)
-            # Clip val to [-1, 1] to avoid numerical errors in arccos
-            val = np.clip(val, -1.0, 1.0)
-
-            # d_ij = floor( RRR * arccos(val) + 1.0 )
-            dist_matrix_np = np.floor(RRR * np.arccos(val) + 1.0)
-
-        else:
-            raise ValueError(f"Unsupported instance type for Python solver: {self.instance_type}")
-
-        # Convert numpy matrix to list for the Heuristic Solver
+        # Convert to list for the existing Python Heuristic interface
         dist_matrix = dist_matrix_np.tolist()
         heatmap_list = heatmap.tolist()
 
-        # 2. Initialize Heuristic Solver & Construct Initial Solution
+        # 2. Initialize Heuristic Solver
         solver = HeuristicTSPSolution(dist_matrix, heatmap_list, topk)
         solver.construct_solution()  # Cheapest Insertion
 
@@ -253,7 +280,6 @@ class Instance:
 
         # 3. Run Metaheuristic
         if method == SolverMethod.SA:
-            # Extract kwargs specific to SA
             initial_temp = kwargs.get('initial_temp', 1000)
             final_temp = kwargs.get('final_temp', 1)
             cooling_rate = kwargs.get('cooling_rate', 0.9995)
@@ -267,7 +293,6 @@ class Instance:
             final_solution = sa.solve(verbose=kwargs.get('verbose', False))
 
         elif method == SolverMethod.ILS:
-            # Extract kwargs specific to ILS
             max_iter = kwargs.get('max_iter', 100)
             perturbation_strength = kwargs.get('perturbation_strength', 3)
             improvement_mode = kwargs.get('improvement_mode', "first")
@@ -275,26 +300,23 @@ class Instance:
                 solution=solver,
                 max_iter=max_iter,
                 perturbation_strength=perturbation_strength,
-                improvement_mode = improvement_mode
+                improvement_mode=improvement_mode
             )
-            final_solution, calls = ils.run(report_stats=kwargs.get('verbose', False))
+            final_solution, calls = ils.run(verbose=kwargs.get('verbose', False))
 
         solve_time = time.time() - start_time
 
         # 4. Extract Results
         tour = final_solution.tour
-
-        # Ensure tour is clean (no duplicate end node)
         if len(tour) > 0 and tour[0] == tour[-1] and len(tour) > 1:
             tour = tour[:-1]
 
-        cost = final_solution.get_solution_cost()
+        # Use centralized cost calculation
+        cost = self.calculate_tour_cost(tour)
 
         return SolverResult(time=solve_time, tour=tour, cost=cost, calls=calls)
 
-
     def _write_solver_input(self, filename: Path, heatmap: np.ndarray, topk: int):
-        # ... (Existing implementation) ...
         num_nodes = self.get_number_of_nodes()
         with open(filename, 'w') as f:
             coords_flat = self.coordinates.flatten()
@@ -322,24 +344,13 @@ class Instance:
             f.write('\n')
 
     def _parse_solver_output(self, output_file: Path) -> Tuple[List[int], float]:
-        # ... (Existing implementation) ...
         if not output_file.exists():
             raise RuntimeError(f"Solver output file not found")
         with open(output_file, 'r') as f:
             lines = f.readlines()
         tour = None
-        cost = None
         for i, line in enumerate(lines):
             line = line.strip()
-            if 'MCTS' in line or 'Distance' in line:
-                parts = line.split()
-                for j, part in enumerate(parts):
-                    if 'Distance' in part and j + 1 < len(parts):
-                        try:
-                            cost = float(parts[j + 1])
-                            break
-                        except ValueError:
-                            continue
             if line.startswith('Solution:'):
                 tour_str = line.replace('Solution:', '').strip()
                 tour = [int(x) - 1 for x in tour_str.split()]
@@ -347,20 +358,9 @@ class Instance:
                     tour = tour[:-1]
         if tour is None:
             raise RuntimeError("Could not parse tour")
-        cost = self._calculate_tour_cost(tour)
-        return tour, cost
 
-    def _calculate_tour_cost(self, tour: List[int]) -> float:
-        cost = 0.0
-        num_nodes = len(tour)
-        for i in range(num_nodes):
-            city1 = tour[i]
-            city2 = tour[(i + 1) % num_nodes]
-            coord1 = self.coordinates[city1]
-            coord2 = self.coordinates[city2]
-            dist = np.sqrt(np.sum((coord1 - coord2) ** 2))
-            cost += dist
-        return cost
+        cost = self.calculate_tour_cost(tour)
+        return tour, cost
 
     def solve(self,
               device: str = 'cpu',
@@ -369,14 +369,8 @@ class Instance:
               method: SolverMethod = SolverMethod.MCTS,
               timeout: int = 300,
               **kwargs) -> SolverResult:
-        """
-        Complete end-to-end solve.
-        pass kwargs like 'max_iter' (ILS) or 'initial_temp' (SA).
-        """
-        print(f"Generating heatmap...")
         heatmap = self._get_heatmap(device=device, temperature=temperature)
 
-        print(f"Solving TSP instance using {method.value}...")
         result = self._solve_instance(
             heatmap,
             method=method,
@@ -386,15 +380,12 @@ class Instance:
             **kwargs
         )
         return result
-def load_file(path: str) -> List[Instance]:
-    # Each file is named <instance_type>.json
-    # Inside, there is a list of jsons with fields "coords" and 'tour'
 
-    # Extract instance type from filename
+
+def load_file(path: str) -> List[Instance]:
     filename = os.path.basename(path)
     type_name = os.path.splitext(filename)[0]
 
-    # Map filename to InstanceType
     type_map = {
         'ATT': InstanceType.ATT,
         'EUC_2D': InstanceType.EUC_2D,
@@ -406,15 +397,13 @@ def load_file(path: str) -> List[Instance]:
 
     instance_type = type_map[type_name]
 
-    # Load JSON file
     with open(path, 'r') as f:
         data = json.load(f)
 
-    # Parse instances
     instances = []
     for idx, item in enumerate(data):
         coords = item['coords']
-        tour = item.get('tour', None)  # Optional
+        tour = item.get('tour', None)
 
         instance = Instance(
             instance_type=instance_type,
@@ -426,13 +415,9 @@ def load_file(path: str) -> List[Instance]:
 
     return instances
 
+
 def load_folder(path: str) -> List[Instance]:
-    # same but for folders
-    # one file per instance type
-
     result = []
-
-    # Find all JSON files in the folder
     folder_path = Path(path)
     if not folder_path.exists():
         raise FileNotFoundError(f"Folder not found: {path}")
@@ -442,20 +427,15 @@ def load_folder(path: str) -> List[Instance]:
     if not json_files:
         raise ValueError(f"No JSON files found in folder: {path}")
 
-    # Load each file
     for json_file in json_files:
         instances = load_file(str(json_file))
         if instances:
-            instance_type = instances[0].instance_type
             result += instances
 
     return result
 
-def save_instances(instances: List[Instance]) -> None:
-    # save inside 'data/new_instances'
-    # one subfolder per type
 
-    # Group instances by type
+def save_instances(instances: List[Instance]) -> None:
     instances_by_type = {}
     for instance in instances:
         instance_type = instance.instance_type
@@ -463,26 +443,19 @@ def save_instances(instances: List[Instance]) -> None:
             instances_by_type[instance_type] = []
         instances_by_type[instance_type].append(instance)
 
-    # Create base directory
     base_path = Path(INSTANCE_FOLDER)
     base_path.mkdir(parents=True, exist_ok=True)
 
-    # Save each type to a separate subfolder
     for instance_type, type_instances in instances_by_type.items():
-        # Create subfolder for this type
         type_name = instance_type_to_name(instance_type)
         type_folder = base_path / type_name
         type_folder.mkdir(exist_ok=True)
 
-        # Save each instance separately
         for instance in type_instances:
             instance_name = instance.get_name()
-
-            # Save coordinates as {name}.npy
             coords_file = type_folder / f"{instance_name}.npy"
             np.save(coords_file, instance.coordinates)
 
-            # Save solution as {name}_sol.npy if it exists
             if instance.tour is not None:
                 sol_file = type_folder / f"{instance_name}_sol.npy"
                 np.save(sol_file, instance.tour)
@@ -492,29 +465,24 @@ def save_instances(instances: List[Instance]) -> None:
 
         print(f"Total: Saved {len(type_instances)} instances of type {type_name}")
 
+
 def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
-    # Load a specific instance from the folder
     type_name = instance_type_to_name(instance_type)
     instance_name = f"{type_name}_{instance_id}"
 
-    # Construct file paths
     base_path = Path(INSTANCE_FOLDER) / type_name
     coords_file = base_path / f"{instance_name}.npy"
     sol_file = base_path / f"{instance_name}_sol.npy"
 
-    # Check if coordinates file exists
     if not coords_file.exists():
         raise FileNotFoundError(f"Instance file not found: {coords_file}")
 
-    # Load coordinates
     coordinates = np.load(coords_file)
 
-    # Load solution if it exists
     solution = None
     if sol_file.exists():
         solution = np.load(sol_file)
 
-    # Create and return instance
     return Instance(
         instance_type=instance_type,
         instance_id=instance_id,
@@ -527,7 +495,6 @@ if __name__ == '__main__':
     # instance = load_instance(0, InstanceType.EUC_2D)
     # instance = load_instance(0, InstanceType.ATT)
     instance = load_instance(2000, InstanceType.ATT)
-    # print(len(instance.coordinates))
     # random.seed()
     # # Run with Simulated Annealing
     res_sa = instance.solve(
@@ -536,7 +503,7 @@ if __name__ == '__main__':
         initial_temp=2000,
         cooling_rate=0.995,
         verbose=True,
-        topk = 2,
+        topk=2,
     )
     print(f"SA Result: {res_sa.cost:.2f}")
     print(res_sa.tour)

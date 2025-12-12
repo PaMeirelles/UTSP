@@ -82,7 +82,7 @@ class ExperimentRunner:
             # Note: We need to cast numpy array to list for the existing method
             try:
                 # Assuming the Instance class has a method like this
-                optimal_cost = instance._calculate_tour_cost(instance.tour.tolist())
+                optimal_cost = instance.calculate_tour_cost(instance.tour.tolist())
             except Exception as e:
                 if self.verbose:
                     print(f"Error calculating optimal cost for {instance.get_name()}: {e}")

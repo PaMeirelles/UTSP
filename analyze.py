@@ -3,7 +3,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 # Load the data
-df = pd.read_csv('final_benchmark_results.csv')
+df = pd.read_csv('old_runs/final_benchmark_results.csv')
 
 # --- Initial Data Prep ---
 
@@ -64,7 +64,8 @@ print(f"Generated plot: {file_names[0]}")
 att_df = df[df['instance_type'] == 'ATT'].copy()
 if not att_df.empty:
     att_topk_df = calculate_success_percentage(att_df.copy(), 'topk')
-    plot_success_rate(att_topk_df, 'topk', 'ATT Success Rate by Top K', 'Top K Value', 'att_success_rate_topk.png')
+    plot_success_rate(att_topk_df, 'topk', 'ATT Success Rate by Top K', 'Top K Value',
+                      'old_runs/att_success_rate_topk.png')
     print(f"Generated plot: att_success_rate_topk.png")
 
 

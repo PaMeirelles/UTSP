@@ -138,9 +138,9 @@ class IteratedLocalSearch:
             print(f"{name:<15} | {count:<8} | {total_imp:<15.4f} | {avg_imp:<15.4f} | {avg_time:<15.6f} | {roi:<15.4f}")
         print("----------------------------------\n")
 
-    def run(self, report_stats: bool = False)->Tuple[List[int], List[NeighborhoodCall]]:
+    def run(self, verbose: bool = False)->Tuple[List[int], List[NeighborhoodCall]]:
         start_time = time.time()
-        print(f"--- Iniciando ILS Híbrido (Mode: {self.improvement_mode}) ---")
+        if verbose: print(f"--- Iniciando ILS Híbrido (Mode: {self.improvement_mode}) ---")
 
         s_curr = self.solution.clone()
 
@@ -153,7 +153,8 @@ class IteratedLocalSearch:
         cost_curr = cost_best
 
         temp = self.initial_temp
-        print(f"Custo Inicial: {cost_best:.3f}")
+        if verbose:
+            print(f"Custo Inicial: {cost_best:.3f}")
 
         for i in range(self.max_iter):
             s_candidate = copy.deepcopy(s_curr)
@@ -189,14 +190,16 @@ class IteratedLocalSearch:
                 if cost_curr < cost_best:
                     s_best = copy.deepcopy(s_curr)
                     cost_best = cost_curr
-                    print(f"  -> Iter {i}: Novo melhor! {cost_best:.3f}")
+                    if verbose:
+                        print(f"  -> Iter {i}: Novo melhor! {cost_best:.3f}")
 
             temp *= self.cooling_rate
 
         end_time = time.time()
-        print("--- ILS Finalizado ---")
-        print(f"Melhor custo: {cost_best:.2f}")
-        print(f"Tempo: {end_time - start_time:.2f}s")
-        if report_stats:
+        if verbose:
+            print("--- ILS Finalizado ---")
+            print(f"Melhor custo: {cost_best:.2f}")
+            print(f"Tempo: {end_time - start_time:.2f}s")
+        if verbose:
             self.report_stats()
         return s_best, self.calls
