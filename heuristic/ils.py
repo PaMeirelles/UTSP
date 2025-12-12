@@ -28,6 +28,7 @@ def local_search(solution: HeuristicTSPSolution, improvement_mode: Literal["firs
         Switch,
         TwoOpt,
     ]
+    random.shuffle(neighborhoods)
     k = 0
     calls: List[NeighborhoodCall] = []
     while k < len(neighborhoods):

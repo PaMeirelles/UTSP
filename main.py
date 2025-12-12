@@ -19,7 +19,7 @@ TOPK_VALUES = [1, .5, .2, .1]
 INSTANCE_TYPES = [
     InstanceType.ATT,
     InstanceType.EUC_2D,
-    # InstanceType.GEO
+    InstanceType.GEO
 ]
 
 ILS_CONFIG = {
@@ -35,12 +35,12 @@ SA_CONFIG = {
 }
 
 METHODS = [SolverMethod.SA, SolverMethod.ILS]
-NUM_INSTANCES = 1#00
+NUM_INSTANCES = 100
 SIZES = [x for x in range(10, 101, 10)]
 OUTPUT_FOLDER = "run_12_12_25"
 INSTANCE_FOLDER = "data/new_instances"
 MAX_ID = 11109
-MAX_WORKERS = 10
+MAX_WORKERS =4
 
 
 @dataclasses.dataclass(frozen=True)
