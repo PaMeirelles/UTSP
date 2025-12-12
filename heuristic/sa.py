@@ -12,9 +12,9 @@ class SimulatedAnnealing:
 
     def __init__(self,
                  solution: HeuristicTSPSolution,
-                 initial_temp: float = 1000,
+                 initial_temp: float = 5000,
                  final_temp: float = 1,
-                 cooling_rate: float = 0.9998,
+                 cooling_rate: float = 0.99995,
                  neighborhood_classes: Optional[List[Any]]=None,
                  ):
         """

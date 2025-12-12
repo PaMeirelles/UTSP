@@ -494,38 +494,44 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
 if __name__ == '__main__':
     # instance = load_instance(0, InstanceType.EUC_2D)
     # instance = load_instance(0, InstanceType.ATT)
-    instance = load_instance(2000, InstanceType.ATT)
-    # random.seed()
+    instance = load_instance(0, InstanceType.GEO)
+    op_cost = instance.calculate_tour_cost(instance.tour)
+    print(f"Op cost: {op_cost}")
+    random.seed(42)
     # # Run with Simulated Annealing
+    start = time.time()
     res_sa = instance.solve(
         method=SolverMethod.SA,
         device='cuda',
-        initial_temp=2000,
-        cooling_rate=0.995,
         verbose=True,
-        topk=2,
+        topk=10,
+        initial_temp=50000,
+        final_temp=1,
+        cooling_rate=1 - 1e-6
     )
+    end = time.time()
+    print(f"Total time: {end - start}")
     print(f"SA Result: {res_sa.cost:.2f}")
     print(res_sa.tour)
 
-    # Run with Iterated Local Search
-    res_ils = instance.solve(
-        method=SolverMethod.ILS,
-        device='cuda',
-        max_iter=50,
-        perturbation_strength=4,
-        verbose=True,
-        topk=2,
-    )
-    _ = instance.solve(
-        method=SolverMethod.ILS,
-        device='cuda',
-        max_iter=50,
-        perturbation_strength=4,
-        verbose=True,
-        topk=10,
-    )
-    print(f"ILS Result: {res_ils.cost:.2f}")
+    # # Run with Iterated Local Search
+    # res_ils = instance.solve(
+    #     method=SolverMethod.ILS,
+    #     device='cuda',
+    #     max_iter=50,
+    #     perturbation_strength=4,
+    #     verbose=True,
+    #     topk=2,
+    # )
+    # _ = instance.solve(
+    #     method=SolverMethod.ILS,
+    #     device='cuda',
+    #     max_iter=50,
+    #     perturbation_strength=4,
+    #     verbose=True,
+    #     topk=10,
+    # )
+    # print(f"ILS Result: {res_ils.cost:.2f}")
 
     # folder = load_file(r"C:\UTSP\data\raw_json\GEO.json")
     # save_instances(folder)

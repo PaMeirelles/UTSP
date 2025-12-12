@@ -82,9 +82,9 @@ def perturbation(solution: HeuristicTSPSolution, neighborhoods_arg):
 class IteratedLocalSearch:
     def __init__(self,
                  solution: HeuristicTSPSolution,
-                 max_iter: int = 100,
+                 max_iter: int = 50,
                  perturbation_strength: int = 3,
-                 initial_temp: float = 2000.0,
+                 initial_temp: float = 1000.0,
                  cooling_rate: float = 0.95,
                  improvement_mode: Literal["first", "best"] = "first"):
 
