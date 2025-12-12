@@ -3,7 +3,7 @@ import copy
 import random
 import math
 from dataclasses import dataclass
-from typing import Any, List, Literal
+from typing import Any, List, Literal, Tuple, Dict
 
 from heuristic.heuristic_tsp_solver import HeuristicTSPSolution
 from heuristic.neighborhoods.base_neighborhood import BaseNeighborhood
@@ -138,7 +138,7 @@ class IteratedLocalSearch:
             print(f"{name:<15} | {count:<8} | {total_imp:<15.4f} | {avg_imp:<15.4f} | {avg_time:<15.6f} | {roi:<15.4f}")
         print("----------------------------------\n")
 
-    def run(self, report_stats: bool = False):
+    def run(self, report_stats: bool = False)->Tuple[List[int], List[NeighborhoodCall]]:
         start_time = time.time()
         print(f"--- Iniciando ILS Híbrido (Mode: {self.improvement_mode}) ---")
 
@@ -199,4 +199,4 @@ class IteratedLocalSearch:
         print(f"Tempo: {end_time - start_time:.2f}s")
         if report_stats:
             self.report_stats()
-        return s_best
+        return s_best, self.calls

@@ -13,7 +13,7 @@ from models import GNN
 from utils import get_heat_map
 from cpp_interface import *
 from heuristic.sa import SimulatedAnnealing
-from heuristic.ils import IteratedLocalSearch
+from heuristic.ils import IteratedLocalSearch, NeighborhoodCall
 from heuristic.heuristic_tsp_solver import HeuristicTSPSolution
 
 INSTANCE_FOLDER = 'data/new_instances'
@@ -47,6 +47,7 @@ class SolverResult:
     time: float
     tour: List[int]
     cost: float
+    calls: Optional[List[NeighborhoodCall]] = None
 
 class Instance:
     def __init__(self, instance_type: InstanceType,
@@ -91,10 +92,10 @@ class Instance:
                 self.tour = np.concatenate((self.tour, dummy_indices))
 
     def _get_heatmap(self, device='cpu', temperature=3.5) -> np.ndarray:
-        sizes = [100, 200, 500, 1000]
+        sizes = [10, 50, 100]
         size = None
         for s in sizes:
-            if self.get_number_of_nodes() < s:
+            if self.get_number_of_nodes() <= s:
                 size = s
                 break
         if size is None:
@@ -103,14 +104,12 @@ class Instance:
         num_nodes = self.get_number_of_nodes()
 
         model_configs = {
+            10: {'hidden_dim': 64, 'nlayers': 2, 'rescale': 1.0},
+            50: {'hidden_dim': 64, 'nlayers': 2, 'rescale': 1.0},
             100: {'hidden_dim': 64, 'nlayers': 2, 'rescale': 1.0},
-            200: {'hidden_dim': 64, 'nlayers': 2, 'rescale': 2.0},
-            500: {'hidden_dim': 64, 'nlayers': 2, 'rescale': 4.0},
-            1000: {'hidden_dim': 128, 'nlayers': 2, 'rescale': 4.0}
         }
 
         if num_nodes not in model_configs:
-            available_sizes = list(model_configs.keys())
             raise ValueError(f"No trained model available for size {num_nodes}")
 
         config = model_configs[num_nodes]
@@ -118,8 +117,9 @@ class Instance:
         nlayers = config['nlayers']
         rescale = config['rescale']
 
+        distance_name = instance_type_to_name(self.instance_type)
         # Load the model
-        model_path = f'Saved_Models/TSP_{num_nodes}/scatgnn_layer_{nlayers}_hid_{hidden_dim}_model_210_temp_{temperature:.3f}.pth'
+        model_path = f'Saved_Models/{distance_name}/TSP_{num_nodes}/scatgnn_layer_{nlayers}_hid_{hidden_dim}_model_210_temp_{temperature:.3f}.pth'
         if not os.path.exists(model_path):
             # Try fallback to generic naming if specific path fails, or just raise
             raise FileNotFoundError(f"Model file not found: {model_path}")
@@ -249,6 +249,7 @@ class Instance:
         solver.construct_solution()  # Cheapest Insertion
 
         final_solution = None
+        calls = None
 
         # 3. Run Metaheuristic
         if method == SolverMethod.SA:
@@ -276,7 +277,7 @@ class Instance:
                 perturbation_strength=perturbation_strength,
                 improvement_mode = improvement_mode
             )
-            final_solution = ils.run(report_stats=kwargs.get('verbose', False))
+            final_solution, calls = ils.run(report_stats=kwargs.get('verbose', False))
 
         solve_time = time.time() - start_time
 
@@ -287,10 +288,9 @@ class Instance:
         if len(tour) > 0 and tour[0] == tour[-1] and len(tour) > 1:
             tour = tour[:-1]
 
-        cost = final_solution.get_solution_cost() if hasattr(final_solution,
-                                                             'get_solution_cost') else final_solution.evaluate()
+        cost = final_solution.get_solution_cost()
 
-        return SolverResult(time=solve_time, tour=tour, cost=cost)
+        return SolverResult(time=solve_time, tour=tour, cost=cost, calls=calls)
 
 
     def _write_solver_input(self, filename: Path, heatmap: np.ndarray, topk: int):
@@ -373,7 +373,7 @@ class Instance:
         Complete end-to-end solve.
         pass kwargs like 'max_iter' (ILS) or 'initial_temp' (SA).
         """
-        print(f"Generating heatmap for {self.get_number_of_nodes()}-node instance...")
+        print(f"Generating heatmap...")
         heatmap = self._get_heatmap(device=device, temperature=temperature)
 
         print(f"Solving TSP instance using {method.value}...")
@@ -524,39 +524,41 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
 
 
 if __name__ == '__main__':
-    instance = load_instance(10000, InstanceType.EUC_2D)
+    # instance = load_instance(0, InstanceType.EUC_2D)
+    # instance = load_instance(0, InstanceType.ATT)
+    instance = load_instance(2000, InstanceType.ATT)
     # print(len(instance.coordinates))
     # random.seed()
-    # # # Run with Simulated Annealing
-    # res_sa = instance.solve(
-    #     method=SolverMethod.SA,
-    #     device='cuda',
-    #     initial_temp=2000,
-    #     cooling_rate=0.995,
-    #     verbose=True,
-    #     topk = 20,
-    # )
-    # print(f"SA Result: {res_sa.cost:.2f}")
-    # print(res_sa.tour)
+    # # Run with Simulated Annealing
+    res_sa = instance.solve(
+        method=SolverMethod.SA,
+        device='cuda',
+        initial_temp=2000,
+        cooling_rate=0.995,
+        verbose=True,
+        topk = 2,
+    )
+    print(f"SA Result: {res_sa.cost:.2f}")
+    print(res_sa.tour)
 
     # Run with Iterated Local Search
-    # res_ils = instance.solve(
-    #     method=SolverMethod.ILS,
-    #     device='cuda',
-    #     max_iter=50,
-    #     perturbation_strength=4,
-    #     verbose=True,
-    #     topk=20,
-    # )
-    # _ = instance.solve(
-    #     method=SolverMethod.ILS,
-    #     device='cuda',
-    #     max_iter=50,
-    #     perturbation_strength=4,
-    #     verbose=True,
-    #     topk=100,
-    # )
-    # print(f"ILS Result: {res_ils.cost:.2f}")
+    res_ils = instance.solve(
+        method=SolverMethod.ILS,
+        device='cuda',
+        max_iter=50,
+        perturbation_strength=4,
+        verbose=True,
+        topk=2,
+    )
+    _ = instance.solve(
+        method=SolverMethod.ILS,
+        device='cuda',
+        max_iter=50,
+        perturbation_strength=4,
+        verbose=True,
+        topk=10,
+    )
+    print(f"ILS Result: {res_ils.cost:.2f}")
 
-    # folder = load_file(r"C:\UTSP\data\raw_json\EUC_2D.json")
+    # folder = load_file(r"C:\UTSP\data\raw_json\GEO.json")
     # save_instances(folder)
