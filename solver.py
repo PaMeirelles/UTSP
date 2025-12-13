@@ -509,7 +509,7 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
 
 if __name__ == '__main__':
     random.seed(42)
-    instance = load_instance(1111, InstanceType.EUC_2D)
+    instance = load_instance(1117, InstanceType.EUC_2D)
     print(instance.get_number_of_nodes())
     op_cost = instance.calculate_tour_cost(instance.tour)
 

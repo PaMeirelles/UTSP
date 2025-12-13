@@ -124,7 +124,7 @@ class Shift(BaseNeighborhood[ShiftArgs]):
         city_indices = self.solution.city_indices
 
         best_move = None
-        best_delta = 1e-10 # previne q erros de arredondamento fodam a gnt
+        best_delta = -1e-10 # previne q erros de arredondamento fodam a gnt
 
         # For every node u in the tour
         for i in range(n):
