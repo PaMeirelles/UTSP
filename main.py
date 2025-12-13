@@ -22,10 +22,8 @@ INSTANCE_TYPES = [
 
 # --- 5-HOUR RUN SETTINGS (Target ~6s Avg) ---
 
-# ILS: Cut iterations significantly to tame the large instances
-# Previous Size 100 avg: 63s (50 iters). New target: ~12s -> 10 iters.
 ILS_CONFIG = {
-    "max_iter": 10,             # Reduced from 50 to 10
+    "max_iter": 100,
     "perturbation_strength": 3,
     "improvement_mode": "first",
     "temp_factor": 0.05,
@@ -33,18 +31,16 @@ ILS_CONFIG = {
     "cooling_rate": 0.95
 }
 
-# SA: Slightly faster cooling to match ILS average
-# Previous ~9s. New target ~5-6s.
 SA_CONFIG = {
     "temp_factor": 0.5,
     "min_temp_ratio": 1e-5,
-    "cooling_rate": 0.99998     # Reduced from 0.99999
+    "cooling_rate": 0.99998
 }
 
 METHODS = [SolverMethod.SA, SolverMethod.ILS]
-NUM_INSTANCES = 100
+NUM_INSTANCES = 1#00
 SIZES = [x for x in range(10, 101, 10)]
-OUTPUT_FOLDER = "run_5h_final"
+OUTPUT_FOLDER = "run_fast"
 INSTANCE_FOLDER = "data/new_instances"
 MAX_ID = 11109
 MAX_WORKERS = 10

@@ -509,7 +509,7 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
 
 if __name__ == '__main__':
     random.seed(42)
-    instance = load_instance(1117, InstanceType.EUC_2D)
+    instance = load_instance(9999, InstanceType.ATT)
     print(instance.get_number_of_nodes())
     op_cost = instance.calculate_tour_cost(instance.tour)
 
@@ -519,11 +519,13 @@ if __name__ == '__main__':
         method=SolverMethod.ILS,
         device='cuda',
         verbose=True,
-        topk=5,
-        # temp_factor=0.5,  # Should calculate T0 based on cost
-        # min_temp_ratio=1e-5,  # Should calculate Tf based on T0
-        # cooling_rate=0.9995
+        topk=100,
+        max_iter=100,
+        perturbation_strength=3,
+        temp_factor=0.05,  # Should calculate T0 based on cost
+        min_temp_ratio=1e-8,  # Should calculate Tf based on T0
+        cooling_rate=0.95
     )
     end = time.time()
     print(f"Total time: {end - start}")
-    print(f"SA Result: {res_sa.cost:.2f}")
+    print(f"Result: {res_sa.cost:.2f}")

@@ -194,15 +194,11 @@ class IteratedLocalSearch:
             if delta < 0:
                 accept = True
             else:
-                # Use dynamic final_temp instead of hardcoded 0.001
                 if temp > self.final_temp:
                     try:
                         r = random.random()
-                        if -delta / temp > -700:  # Overflow check
-                            if r < math.exp(-delta / temp):
-                                accept = True
-                        else:
-                            accept = False
+                        if r < math.exp(-delta / temp):
+                            accept = True
                     except OverflowError:
                         accept = False
                 else:
