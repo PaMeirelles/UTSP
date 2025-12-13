@@ -244,7 +244,6 @@ class Instance:
 
         tour_indices = np.array(tour)
         if len(tour_indices) < self.get_number_of_nodes():
-            # Safety check if tour is incomplete, though rarely used in this context
             pass
 
         p = self.coordinates[tour_indices]
@@ -262,32 +261,45 @@ class Instance:
         """
         start_time = time.time()
 
-        # 1. Prepare Distance Matrix using broadcasted _calculate_distances
-        # Shape: (N, 1, 2) vs (1, N, 2) -> Result (N, N)
+        # 1. Prepare Distance Matrix
         coords = self.coordinates
         dist_matrix_np = self._calculate_distances(coords[:, np.newaxis, :], coords[np.newaxis, :, :])
-
-        # Convert to list for the existing Python Heuristic interface
         dist_matrix = dist_matrix_np.tolist()
         heatmap_list = heatmap.tolist()
 
-        # 2. Initialize Heuristic Solver
+        # 2. Initialize Heuristic Solver & Construct Initial Solution
         solver = HeuristicTSPSolution(dist_matrix, heatmap_list, topk)
         solver.construct_solution()  # Cheapest Insertion
+
+        # --- DYNAMIC TEMPERATURE SCALING ---
+        # Calculate T0 based on the initial solution cost.
+        # For SA: cost * 0.5 means we accept expensive moves early on.
+        # For ILS: cost * 0.05 is usually enough for perturbations.
+        initial_cost = solver.get_solution_cost()
+
+        # Get factor from kwargs (defaulting to safe values if missing)
+        temp_factor = kwargs.get('temp_factor', 0.1)
+
+        # Calculate Start Temp
+        initial_temp = initial_cost * temp_factor
+
+        # Calculate End Temp (Scale-independent)
+        # If min_temp_ratio is provided, use it. Otherwise default to a small fraction.
+        min_temp_ratio = kwargs.get('min_temp_ratio', 1e-5)
+        final_temp = initial_temp * min_temp_ratio
 
         final_solution = None
         calls = None
 
         # 3. Run Metaheuristic
         if method == SolverMethod.SA:
-            initial_temp = kwargs.get('initial_temp', 1000)
-            final_temp = kwargs.get('final_temp', 1)
+            # Cooling rate from kwargs
             cooling_rate = kwargs.get('cooling_rate', 0.9995)
 
             sa = SimulatedAnnealing(
                 solution=solver,
-                initial_temp=initial_temp,
-                final_temp=final_temp,
+                initial_temp=initial_temp,  # Dynamic
+                final_temp=final_temp,  # Dynamic
                 cooling_rate=cooling_rate
             )
             final_solution = sa.solve(verbose=kwargs.get('verbose', False))
@@ -296,10 +308,15 @@ class Instance:
             max_iter = kwargs.get('max_iter', 100)
             perturbation_strength = kwargs.get('perturbation_strength', 3)
             improvement_mode = kwargs.get('improvement_mode', "first")
+            cooling_rate = kwargs.get('cooling_rate', 0.95)
+
             ils = IteratedLocalSearch(
                 solution=solver,
                 max_iter=max_iter,
                 perturbation_strength=perturbation_strength,
+                initial_temp=initial_temp,  # Dynamic
+                final_temp=final_temp,  # Dynamic (Used for cut-off check)
+                cooling_rate=cooling_rate,
                 improvement_mode=improvement_mode
             )
             final_solution, calls = ils.run(verbose=kwargs.get('verbose', False))
@@ -311,7 +328,6 @@ class Instance:
         if len(tour) > 0 and tour[0] == tour[-1] and len(tour) > 1:
             tour = tour[:-1]
 
-        # Use centralized cost calculation
         cost = self.calculate_tour_cost(tour)
 
         return SolverResult(time=solve_time, tour=tour, cost=cost, calls=calls)
@@ -492,46 +508,22 @@ def load_instance(instance_id: int, instance_type: InstanceType) -> Instance:
 
 
 if __name__ == '__main__':
-    # instance = load_instance(0, InstanceType.EUC_2D)
-    # instance = load_instance(0, InstanceType.ATT)
-    instance = load_instance(0, InstanceType.GEO)
-    op_cost = instance.calculate_tour_cost(instance.tour)
-    print(f"Op cost: {op_cost}")
     random.seed(42)
-    # # Run with Simulated Annealing
+    instance = load_instance(1111, InstanceType.EUC_2D)
+    print(instance.get_number_of_nodes())
+    op_cost = instance.calculate_tour_cost(instance.tour)
+
+    # Example debug run with dynamic factors
     start = time.time()
     res_sa = instance.solve(
-        method=SolverMethod.SA,
+        method=SolverMethod.ILS,
         device='cuda',
         verbose=True,
-        topk=10,
-        initial_temp=50000,
-        final_temp=1,
-        cooling_rate=1 - 1e-6
+        topk=5,
+        # temp_factor=0.5,  # Should calculate T0 based on cost
+        # min_temp_ratio=1e-5,  # Should calculate Tf based on T0
+        # cooling_rate=0.9995
     )
     end = time.time()
     print(f"Total time: {end - start}")
     print(f"SA Result: {res_sa.cost:.2f}")
-    print(res_sa.tour)
-
-    # # Run with Iterated Local Search
-    # res_ils = instance.solve(
-    #     method=SolverMethod.ILS,
-    #     device='cuda',
-    #     max_iter=50,
-    #     perturbation_strength=4,
-    #     verbose=True,
-    #     topk=2,
-    # )
-    # _ = instance.solve(
-    #     method=SolverMethod.ILS,
-    #     device='cuda',
-    #     max_iter=50,
-    #     perturbation_strength=4,
-    #     verbose=True,
-    #     topk=10,
-    # )
-    # print(f"ILS Result: {res_ils.cost:.2f}")
-
-    # folder = load_file(r"C:\UTSP\data\raw_json\GEO.json")
-    # save_instances(folder)

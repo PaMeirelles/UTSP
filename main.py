@@ -12,8 +12,6 @@ from tqdm import tqdm
 from heuristic.ils import NeighborhoodCall
 from solver import InstanceType, SolverMethod, load_instance
 
-random.seed(42)
-
 # --- CONFIGURATION ---
 TOPK_VALUES = [1, .5, .2, .1]
 INSTANCE_TYPES = [
@@ -22,25 +20,34 @@ INSTANCE_TYPES = [
     InstanceType.GEO
 ]
 
+# --- 5-HOUR RUN SETTINGS (Target ~6s Avg) ---
+
+# ILS: Cut iterations significantly to tame the large instances
+# Previous Size 100 avg: 63s (50 iters). New target: ~12s -> 10 iters.
 ILS_CONFIG = {
-    "max_iter": 50,
+    "max_iter": 10,             # Reduced from 50 to 10
     "perturbation_strength": 3,
-    "improvement_mode": "first"
+    "improvement_mode": "first",
+    "temp_factor": 0.05,
+    "min_temp_ratio": 1e-8,
+    "cooling_rate": 0.95
 }
 
+# SA: Slightly faster cooling to match ILS average
+# Previous ~9s. New target ~5-6s.
 SA_CONFIG = {
-    "initial_temp": 50000,
-    "final_temp": 1,
-    "cooling_rate": 1 - 1e-6
+    "temp_factor": 0.5,
+    "min_temp_ratio": 1e-5,
+    "cooling_rate": 0.99998     # Reduced from 0.99999
 }
 
 METHODS = [SolverMethod.SA, SolverMethod.ILS]
 NUM_INSTANCES = 100
 SIZES = [x for x in range(10, 101, 10)]
-OUTPUT_FOLDER = "run_12_12_25"
+OUTPUT_FOLDER = "run_5h_final"
 INSTANCE_FOLDER = "data/new_instances"
 MAX_ID = 11109
-MAX_WORKERS =4
+MAX_WORKERS = 10
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,7 +65,6 @@ def get_run_filename(run_id: RunID, extension: str) -> str:
 def get_run_ids(sizes: List[int]) -> List[RunID]:
     run_ids: List[RunID] = []
     for instance_type in INSTANCE_TYPES:
-        instance_ids = []
         instances_added_per_size = {key: 0 for key in sizes}
         total_instances_added = 0
         pointer = 0
@@ -71,34 +77,54 @@ def get_run_ids(sizes: List[int]) -> List[RunID]:
             instance_size = instance.get_number_of_nodes()
             if instance_size in instances_added_per_size:
                 if instances_added_per_size[instance_size] < NUM_INSTANCES:
-                    instance_ids.append((pointer, instance_size))
-                    total_instances_added += 1
+                    for method in METHODS:
+                        for topk in TOPK_VALUES:
+                            run_ids.append(RunID(instance_type, topk, pointer, method, instance_size))
+                    
                     instances_added_per_size[instance_size] += 1
+                    total_instances_added += 1
+            
             pointer += 1
             if total_instances_added == NUM_INSTANCES * len(sizes):
                 break
-        for (inst_id, inst_size) in instance_ids:
-            for method in METHODS:
-                for topk in TOPK_VALUES:
-                    run_ids.append(RunID(instance_type, topk, inst_id, method, inst_size))
     return run_ids
 
 
-def stratified_sort(run_ids: List[RunID]) -> List[RunID]:
-    groups = defaultdict(list)
+def round_robin_sort(run_ids: List[RunID]) -> List[RunID]:
+    """
+    Sorts runs to distribute difficulty evenly.
+    Iterates through instances, picking one from each size/type combo sequentially.
+    """
+    problems: Dict[Tuple[int, InstanceType, int], List[RunID]] = defaultdict(list)
     for r in run_ids:
-        groups[r.size].append(r)
-    rng = random.Random(42)
-    sorted_sizes = sorted(groups.keys())
-    for s in sorted_sizes:
-        rng.shuffle(groups[s])
-    interleaved = []
-    max_len = max(len(g) for g in groups.values())
-    for i in range(max_len):
+        key = (r.size, r.instance_type, r.instance_id)
+        problems[key].append(r)
+
+    bucket: Dict[int, Dict[InstanceType, List[Tuple[int, InstanceType, int]]]] = defaultdict(lambda: defaultdict(list))
+    for key in problems.keys():
+        size, idx_type, _ = key
+        bucket[size][idx_type].append(key)
+        
+    for s in bucket:
+        for t in bucket[s]:
+            bucket[s][t].sort(key=lambda x: x[2])
+
+    sorted_runs = []
+    max_count = 0
+    for s in bucket:
+        for t in bucket[s]:
+            max_count = max(max_count, len(bucket[s][t]))
+            
+    sorted_sizes = sorted(SIZES)
+    
+    for k in range(max_count):
         for s in sorted_sizes:
-            if i < len(groups[s]):
-                interleaved.append(groups[s][i])
-    return interleaved
+            for t in INSTANCE_TYPES:
+                if k < len(bucket[s][t]):
+                    prob_key = bucket[s][t][k]
+                    sorted_runs.extend(problems[prob_key])
+                    
+    return sorted_runs
 
 
 def fill_done_dict(done_dict: Dict[RunID, bool]) -> None:
@@ -139,13 +165,14 @@ def fill_done_dict(done_dict: Dict[RunID, bool]) -> None:
 def save_stats(run_id: RunID, calls: List[NeighborhoodCall]) -> None:
     file_path = get_run_filename(run_id, "json")
     calls_data = []
-    for c in calls:
-        nb_name = type(c.neighborhood_type).__name__
-        calls_data.append({
-            "duration": c.duration,
-            "neighborhood": nb_name,
-            "improvement": c.improvement
-        })
+    if calls:
+        for c in calls:
+            nb_name = type(c.neighborhood_type).__name__
+            calls_data.append({
+                "duration": c.duration,
+                "neighborhood": nb_name,
+                "improvement": c.improvement
+            })
     data = {
         "run_id": {
             "type": run_id.instance_type.name,
@@ -159,11 +186,7 @@ def save_stats(run_id: RunID, calls: List[NeighborhoodCall]) -> None:
         json.dump(data, f, indent=4)
 
 
-# --- WORKER FUNCTION ---
 def process_single_run(run_id: RunID, lock) -> Tuple[RunID, Optional[Dict], Optional[str]]:
-    """
-    Worker now takes a lock and WRITES to CSV directly.
-    """
     try:
         solver_kwargs = SA_CONFIG if run_id.method == SolverMethod.SA else ILS_CONFIG
 
@@ -178,14 +201,13 @@ def process_single_run(run_id: RunID, lock) -> Tuple[RunID, Optional[Dict], Opti
             topk=top_k_int,
             instance_type=run_id.instance_type,
             device='cuda',
+            verbose=False,
             **solver_kwargs
         )
 
-        # 1. Save JSON Stats (Safe, unique file)
         if run_id.method == SolverMethod.ILS:
             save_stats(run_id, result.calls)
 
-        # 2. Prepare Data
         gap = (result.cost - optimal_cost) / optimal_cost if optimal_cost != 0 else 0.0
         csv_row = {
             "instance_type": run_id.instance_type.name,
@@ -196,15 +218,13 @@ def process_single_run(run_id: RunID, lock) -> Tuple[RunID, Optional[Dict], Opti
             "found_cost": result.cost,
             "gap": gap,
             "time_taken": result.time,
-            "date_run": "12_12_25"
+            "date_run": "13_12_25"
         }
 
-        # 3. Write to CSV SAFELY using the Lock
         csv_file = os.path.join(OUTPUT_FOLDER, "summary_results.csv")
         fieldnames = list(csv_row.keys())
 
         with lock:
-            # Check existence INSIDE lock to prevent double-header writing
             file_exists = os.path.isfile(csv_file)
             with open(csv_file, mode='a', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -212,7 +232,6 @@ def process_single_run(run_id: RunID, lock) -> Tuple[RunID, Optional[Dict], Opti
                     writer.writeheader()
                 writer.writerow(csv_row)
 
-        # Return data just for the UI/Progress bar
         return run_id, csv_row, None
 
     except Exception as e:
@@ -226,7 +245,8 @@ def main():
     run_ids = get_run_ids(SIZES)
     print(f"Total runs generated: {len(run_ids)}")
 
-    run_ids = stratified_sort(run_ids)
+    run_ids = round_robin_sort(run_ids)
+    print("Runs sorted (Round-Robin).")
 
     done_dict: Dict[RunID, bool] = {key: False for key in run_ids}
     fill_done_dict(done_dict)
@@ -234,7 +254,6 @@ def main():
     pending_runs = [rid for rid, done in done_dict.items() if not done]
     print(f"Runs pending: {len(pending_runs)}")
 
-    # Create Manager and Lock
     manager = multiprocessing.Manager()
     file_lock = manager.Lock()
 
@@ -248,7 +267,6 @@ def main():
     )
 
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Pass the lock to every worker
         future_to_run = {
             executor.submit(process_single_run, rid, file_lock): rid
             for rid in pending_runs
@@ -262,10 +280,9 @@ def main():
                 if error_msg:
                     tqdm.write(f"Failed on run {run_id}: {error_msg}")
                 else:
-                    # Update TQDM only (Writing is already done by worker)
                     pbar.set_description(f"Run {run_id.instance_type.name} {run_id.instance_id}")
                     pbar.set_postfix({
-                        "Method": run_id.method.name,
+                        "M": run_id.method.name,
                         "Sz": run_id.size,
                         "K": run_id.topk,
                         "Gap": f"{csv_data['gap']:.2%}"

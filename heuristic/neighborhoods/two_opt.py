@@ -106,7 +106,7 @@ class TwoOpt(BaseNeighborhood[TwoOptArgs]):
         city_indices = self.solution.city_indices
 
         best_move = None
-        best_delta = 0.0
+        best_delta = 1e-10 # previne q erros de arredondamento fodam a gnt
 
         for i in range(n):
             u = tour[i]

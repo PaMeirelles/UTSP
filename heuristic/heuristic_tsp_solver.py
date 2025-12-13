@@ -32,6 +32,9 @@ class HeuristicTSPSolution:
 
         self.city_indices = None
 
+    def get_size(self):
+        return len(self.distances)
+
     def clone(self):
         clone = HeuristicTSPSolution(self.distances, self.heatmap, self.top_k)
         clone.tour = self.tour
