@@ -59,14 +59,31 @@ np.random.seed(args.seed)
 
 #tsp_instances_orig = np.load('./data/default_instances/train_tsp_instance_%d.npy'%args.num_of_nodes)
 
+distancetype = args.distancetype
+tsp_all_instances = []
 tsp_instances = []
 tsp_sols = []
-with open(f'./data/new_instances/{args.distancetype}/{args.distancetype}_Orig.json', 'r') as f:
+tsp_test_instances = []
+testCoords = []
+with open(f'./data/new_instances/{distancetype}/{distancetype}_Orig.json', 'r') as f:
     allCoords = json.load(f)
-    for coords in allCoords:
+    
+    for coords in allCoords: 
         if(len(coords['coords']) == args.num_of_nodes):
-            tsp_instances.append(np.array(coords['coords'], dtype=np.float64))
-            tsp_sols.append(np.array(coords['tour'], dtype=np.int64))
+            tsp_all_instances.append(coords)
+    
+    train_test_split = int(0.8*len(tsp_all_instances))
+    trainCoords = tsp_all_instances[0:train_test_split]
+    testCoords = tsp_all_instances[train_test_split:len(allCoords)]
+
+    for tcords in trainCoords:
+        tsp_instances.append(np.array(tcords['coords'], dtype=np.float64))
+        tsp_sols.append(np.array(tcords['tour'], dtype=np.int64))
+
+
+with open('TestModels/'+distancetype+'/Test_JSON_%s_%d_nodes.json'%(distancetype, args.num_of_nodes), 'w') as f:
+    json.dump(testCoords, f)
+
 
 tsp_instances = np.array(tsp_instances)
 

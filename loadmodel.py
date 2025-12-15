@@ -9,6 +9,10 @@ import pickle
 from torch.utils.data import  Dataset,DataLoader# use pytorch dataloader
 from random import shuffle
 import numpy as np
+import json
+import math
+from geopy.distance import geodesic
+
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--seed', type=int, default=42, help='Random seed.')
@@ -42,7 +46,10 @@ parser.add_argument('--rescale', type=float, default=1.,
                     help='rescale for xy plane')
 parser.add_argument('--device', type=str, default='cuda',
                     help='Device')
+parser.add_argument('--distancetype', type=str, default='EUC_2D',
+                    help='distancetype')
 args = parser.parse_args()
+distancetype = args.distancetype
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.enabled = True
@@ -50,6 +57,7 @@ torch.cuda.manual_seed(args.seed)
 device = args.device
 
 
+'''
 tsp_instances = np.load('./data/test_tsp_instance_%d.npy'%args.num_of_nodes) # 128 instances
 NumofTestSample = tsp_instances.shape[0]
 Std = np.std(tsp_instances, axis=1)
@@ -59,10 +67,32 @@ Mean = np.mean(tsp_instances, axis=1)
 tsp_instances = tsp_instances - Mean.reshape((NumofTestSample,1,2))
 
 tsp_instances = args.rescale * tsp_instances # 2.0 is the rescale
+'''
 
-tsp_sols = np.load('./data/test_tsp_sol_%d.npy'%args.num_of_nodes)
+tsp_instances = []
+tsp_sols = []
+with open(f'./data/new_instances/{args.distancetype}/{args.distancetype}_Orig.json', 'r') as f:
+    allCoords = json.load(f)
+    for coords in allCoords:
+        if(len(coords['coords']) == args.num_of_nodes):
+            tsp_instances.append(np.array(coords['coords'], dtype=np.float64))
+            tsp_sols.append(np.array(coords['tour'], dtype=np.int64))
+
+tsp_instances = np.array(tsp_instances)
+
+NumofTestSample = len(tsp_instances)
+LENGDATA = tsp_instances.shape[0]
+
+Std = np.std(tsp_instances, axis=1)
+Mean = np.mean(tsp_instances, axis=1)
+
+
+tsp_instances = tsp_instances - Mean.reshape((NumofTestSample,1,2))
+tsp_instances = args.rescale * tsp_instances # 2.0 is the rescale
+
+
+#tsp_sols = np.load('./data/test_tsp_sol_%d.npy'%args.num_of_nodes)
 total_samples = tsp_instances.shape[0]
-import json
 
 from models import GNN
 #scattering model
@@ -85,9 +115,47 @@ def coord_to_adj(coord_arr):
     return dis_mat
 
 
-tsp_instances_adj = np.zeros((total_samples,args.num_of_nodes,args.num_of_nodes))
-for i in range(total_samples):
-    tsp_instances_adj[i] = coord_to_adj(tsp_instances[i])
+def coord_to_adj_geo(coord_arr):
+    pi = math.pi
+    num_nodes = coord_arr.shape[0]
+    dis_mat = np.zeros((num_nodes,num_nodes))
+    for i in range(num_nodes):
+        for j in range(num_nodes):
+            if i!=j:
+                loc1 = (float(coord_arr[i][1]*pi/180),float(coord_arr[i][0]*pi/180))
+                loc2 = (float(coord_arr[j][1]*pi/180),float(coord_arr[j][0]*pi/180))
+                dis_mat[i][j] = geodesic(loc1,loc2).meters
+    return dis_mat
+
+def coord_to_adj_att(coord_arr):
+    num_nodes = coord_arr.shape[0]
+    dis_mat = np.zeros((num_nodes,num_nodes))
+    for i in range(num_nodes):
+        for j in range(num_nodes):
+            if i!=j:
+                xd = coord_arr[i][0] - coord_arr[j][0]
+                yd = coord_arr[i][1] - coord_arr[j][1]
+                rij = np.sqrt( (xd*xd + yd*yd)/10.0 )
+                tij = round(rij)
+                if tij < rij:
+                    dij = tij + 1
+                else:
+                    dij = tij
+                dis_mat[i][j] = dij
+    return dis_mat
+
+tsp_instances_adj = np.zeros((LENGDATA,args.num_of_nodes,args.num_of_nodes))
+print('Preparing distance matrices. Using distance type:',args.distancetype)
+distancetype = args.distancetype
+for i in range(LENGDATA):
+    if(distancetype == 'EUC_2D'):
+        tsp_instances_adj[i] = coord_to_adj(tsp_instances[i])
+    elif(distancetype == 'GEO'):
+        tsp_instances_adj[i] = coord_to_adj_geo(tsp_instances[i])
+    elif(distancetype == 'ATT'):
+        tsp_instances_adj[i] = coord_to_adj_att(tsp_instances[i])
+
+
 class TSP_Dataset(Dataset):
     def __init__(self, coord,data, targets):
         self.coord = torch.FloatTensor(coord)
@@ -119,7 +187,7 @@ def test(loader,topk = 20):
     TestData_size = len(loader.dataset)
     Saved_indices = np.zeros((TestData_size,args.num_of_nodes,topk))
     Saved_Values = np.zeros((TestData_size,args.num_of_nodes,topk))
-    Saved_sol = np.zeros((TestData_size,args.num_of_nodes+1))
+    Saved_sol = np.zeros((TestData_size,args.num_of_nodes))
     Saved_pos = np.zeros((TestData_size,args.num_of_nodes,2))
     count = 0
     model.eval()
@@ -151,8 +219,11 @@ def test(loader,topk = 20):
 
 
 #TSP200
-model_name = 'Saved_Models/TSP_%d/scatgnn_layer_%d_hid_%d_model_210_temp_3.500.pth'%(args.num_of_nodes,args.nlayers,args.hidden)# topk = 10
+#model_name = 'Saved_Models/TSP_%d/scatgnn_layer_%d_hid_%d_model_210_temp_3.500.pth'%(args.num_of_nodes,args.nlayers,args.hidden)# topk = 10
+model_name = 'Saved_Models/'+distancetype+'/TSP_%d/scatgnn_layer_%d_hid_%d_model_210_temp_3.500.pth'%(args.num_of_nodes,args.nlayers,args.hidden)# topk = 10
+
 model.load_state_dict(torch.load(model_name))
+
 #Saved_indices,Saved_Values,Saved_sol,Saved_pos = test(test_loader,topk = 8) # epoch=20>10 
 Saved_indices,Saved_Values,Saved_sol,Saved_pos = test(test_loader,topk = args.topk) # epoch=20>10
 
@@ -164,7 +235,7 @@ Q = Saved_pos
 A = Saved_sol 
 C = Saved_indices
 V = Saved_Values
-with open("1kTraning_TSP%dInstance_%d.txt"%(args.num_of_nodes,Saved_indices.shape[0]), "w") as f:
+with open("1kTraning_TSP_"+distancetype+"_%dInstance_%d.txt"%(args.num_of_nodes,Saved_indices.shape[0]), "w") as f:
     for i in range(Q.shape[0]):
         for j in range(Q.shape[1]):
             f.write(str(Q[i][j][0]) + " " + str(Q[i][j][1]) + " ")
